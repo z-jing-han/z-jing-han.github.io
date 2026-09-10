@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ching-Han Cheng (鄭璟翰)</title>
+<meta name="description" content="Ching-Han Cheng (鄭璟翰) — Graduate student at NYCU, working on OS internals, kernel modules, and network programming.">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="noise-guard"></div>
+
+<header class="site-header">
+  <div class="wrap header-row">
+    <a class="brand" href="#top">Ching-Han Cheng <span class="brand-zh">(鄭璟翰)</span></a>
+    <div class="header-controls">
+      <nav class="nav">
+        <a href="#about">About</a>
+        <a href="#projects">Projects</a>
+        <a href="assets/resume.pdf" target="_blank" rel="noopener">Resume</a>
+      </nav>
+      <div class="social-links">
+        <a class="social-link" href="https://github.com/z-jing-han" target="_blank" rel="noopener" aria-label="GitHub">
+          <svg class="icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span>GitHub</span>
+        </a>
+        <a class="social-link" href="mailto:zjinghan.cs12@nycu.edu.tw" aria-label="Email" title="zjinghan.cs12@nycu.edu.tw">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>
+          <span>zjinghan.cs12@nycu.edu.tw</span>
+        </a>
+      </div>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle dark mode">
+        <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+
+  <section id="about" class="hero wrap">
+    <p class="eyebrow">Hi, I'm</p>
+    <h1>Ching-Han Cheng <span class="hero-zh">(鄭璟翰)</span></h1>
+    <p class="lede">
+      Graduate student at <strong>National Yang Ming Chiao Tung University</strong>,
+      Institute of Network Engineering. I like taking systems apart &mdash; kernel
+      internals, memory management, and low-level debugging tools &mdash; and
+      putting them back together, better.
+    </p>
+
+    <div class="meta-grid">
+      <div class="meta-item">
+        <span class="meta-label">Education</span>
+        <span class="meta-value">M.S., Network Engineering &mdash; NYCU (2024&ndash;2026)</span>
+        <span class="meta-value meta-sub">B.S., Computer Science &amp; Engineering &mdash; NSYSU, Ranked 5/66 (2020&ndash;2024)</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Thesis</span>
+        <span class="meta-value">Decentralized Workload Offloading for Carbon Reduction and Queue Stability in a Hybrid Cloud-Edge Environment</span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-label">Focus</span>
+        <span class="meta-value">Linux kernel &middot; Network programming &middot; OS internals &middot; Debugging tools</span>
+      </div>
+    </div>
+
+    <div class="cta-row">
+      <a class="btn btn-primary" href="#projects">View projects</a>
+      <a class="btn btn-ghost" href="assets/resume.pdf" download="Ching-Han-Cheng-Resume.pdf">Download resume</a>
+    </div>
+  </section>
+
+  <section id="projects" class="projects wrap">
+    <h2 class="section-title">Projects</h2>
+    <p class="section-sub">A selection of systems &amp; networking projects, mostly built for coursework and self-study.</p>
+
+    <div class="project-grid">
+
+      <article class="project-card">
+        <div class="project-head">
+          <h3>xv6-riscv Kernel</h3>
+          <span class="project-period">Jul. 2026 &ndash; Present</span>
+        </div>
+        <p class="project-sub">MIT 6.1810 Operating Systems Labs &middot; Self-study, in progress</p>
+        <ul class="project-points">
+          <li>Independently completed the first 5 kernel labs, then resolved cross-subsystem merge conflicts (page tables, copy-on-write) to unify them into one regression-free kernel.</li>
+          <li>Designed a two-tier (4KB page / 2MB superpage) buddy-style physical memory allocator with automatic split/coalesce, and extended the <code>sbrk</code> syscall with eager/lazy and normal/super allocation flags.</li>
+        </ul>
+        <div class="project-footer">
+          <div class="tags">
+            <span class="tag">C</span><span class="tag">RISC-V</span><span class="tag">GDB</span><span class="tag">QEMU</span>
+          </div>
+          <!-- TODO: replace with the actual repo URL -->
+          <a class="project-link" href="https://github.com/z-jing-han" target="_blank" rel="noopener">GitHub &rarr;</a>
+        </div>
+      </article>
+
+      <article class="project-card">
+        <div class="project-head">
+          <h3>Single Instruction Debugger</h3>
+          <span class="project-period">Spring 2025</span>
+        </div>
+        <p class="project-sub">NYCU &mdash; Advanced Programming in the UNIX Environment</p>
+        <ul class="project-points">
+          <li>Built an instruction-level debugger, validated by correct breakpoint handling and syscall tracing.</li>
+          <li>Implemented <code>ptrace</code>-based process control, memory patching, and disassembly support.</li>
+        </ul>
+        <div class="project-footer">
+          <div class="tags">
+            <span class="tag">C++</span><span class="tag">Capstone</span>
+          </div>
+          <!-- TODO: replace with the actual repo URL -->
+          <a class="project-link" href="https://github.com/z-jing-han" target="_blank" rel="noopener">GitHub &rarr;</a>
+        </div>
+      </article>
+
+      <article class="project-card">
+        <div class="project-head">
+          <h3>Remote Working Ground Server</h3>
+          <span class="project-period">Spring 2025</span>
+        </div>
+        <p class="project-sub">NYCU &mdash; Network Programming</p>
+        <ul class="project-points">
+          <li>Developed a multi-client shell server, extending built-in commands with broadcast messaging and firewall rules.</li>
+          <li>Implemented single-process concurrent connections and user-to-user pipe communication.</li>
+          <li>Added a concurrent-connected paradigm with per-user environment management and shared-memory synchronization, integrating signals and FIFO-based user pipes.</li>
+        </ul>
+        <div class="project-footer">
+          <div class="tags">
+            <span class="tag">C++</span>
+          </div>
+          <!-- TODO: replace with the actual repo URL -->
+          <a class="project-link" href="https://github.com/z-jing-han" target="_blank" rel="noopener">GitHub &rarr;</a>
+        </div>
+      </article>
+
+      <article class="project-card">
+        <div class="project-head">
+          <h3>AES Linux Kernel Module</h3>
+          <span class="project-period">Spring 2025</span>
+        </div>
+        <p class="project-sub">NYCU &mdash; Advanced Programming in the UNIX Environment</p>
+        <ul class="project-points">
+          <li>Implemented a Linux kernel module with AES encryption/decryption functionality.</li>
+          <li>Supported read, write, and ioctl system calls, and verified concurrent read-write operation and thread safety.</li>
+        </ul>
+        <div class="project-footer">
+          <div class="tags">
+            <span class="tag">C</span><span class="tag">QEMU</span>
+          </div>
+          <!-- TODO: replace with the actual repo URL -->
+          <a class="project-link" href="https://github.com/z-jing-han" target="_blank" rel="noopener">GitHub &rarr;</a>
+        </div>
+      </article>
+
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-row">
+    <p>&copy; <span id="year"></span> Ching-Han Cheng</p>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>
