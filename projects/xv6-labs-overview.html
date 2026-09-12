@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Five xv6 Labs, One Kernel</title>
+<meta name="description" content="What each of MIT 6.1810's first five kernel labs added — utilities, syscall interposition, page tables and superpages, traps, copy-on-write fork — and what it took to merge five branches into a single regression-free kernel.">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="writeup.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-row">
+    <a class="brand" href="../index.html">Ching-Han Cheng <span class="brand-zh">(鄭璟翰)</span></a>
+    <div class="header-controls">
+      <nav class="nav">
+        <a href="../index.html#about">About</a>
+        <a href="../index.html#projects">Projects</a>
+        <a href="../assets/resume.pdf" target="_blank" rel="noopener">Resume</a>
+      </nav>
+      <div class="social-links">
+        <a class="social-link" href="https://github.com/z-jing-han" target="_blank" rel="noopener" aria-label="GitHub">
+          <svg class="icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span>GitHub</span>
+        </a>
+      </div>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle dark mode">
+        <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <section class="doc-hero wrap">
+    <a class="backlink" href="../index.html#projects">&larr; All projects</a>
+    <p class="eyebrow">xv6-riscv &middot; Overview</p>
+    <h1>Five labs, one kernel</h1>
+    <p class="dek">
+      MIT 6.1810 ships each lab as its own branch, each with its own test suite, each guarded by
+      its own compile-time macro. Passing five of them separately is the assignment. Getting all
+      five to run in one kernel at the same time is a different problem &mdash; and the more
+      interesting one.
+    </p>
+    <div class="doc-meta">
+      <span>C &middot; RISC-V (Sv39)</span>
+      <span>QEMU &middot; GDB</span>
+      <span>Jul &ndash; Aug 2026</span>
+      <span>Self-study, ongoing</span>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="tldr">
+      <p class="tldr-label">In short</p>
+      <p>
+        I worked through the first five 6.1810 labs on separate branches &mdash; utilities, system
+        calls, traps, page tables, and copy-on-write fork &mdash; then merged all five into one
+        kernel where every lab's features are live at the same time, rather than five checkouts
+        that each work in isolation.
+      </p>
+      <p>
+        The merge is where the real work was. Two labs had independently taken ownership of the
+        same thing: the page-table lab wanted the allocator to hand out 2MB superpages, and the
+        COW lab wanted every frame to carry a reference count. Reconciling them meant rebuilding
+        the physical memory allocator, which is written up separately in
+        <a href="xv6-memory-management.html">the allocator deep dive</a>, along with
+        <a href="xv6-debugging.html">what broke while getting there</a>.
+      </p>
+      <div class="stat-row">
+        <div class="stat">
+          <span class="stat-num">5</span>
+          <span class="stat-label">Labs merged into one kernel</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num">30</span>
+          <span class="stat-label">Commits, Jul 1 &ndash; Aug 19 2026</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num">4</span>
+          <span class="stat-label">Sequential merges into one branch</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num">5&times;</span>
+          <span class="stat-label">Test suites re-run to confirm nothing regressed</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="doc-body wrap">
+
+    <section class="section">
+      <p class="sec-num">01 &middot; The labs</p>
+      <h2>What each branch added</h2>
+      <p class="lead-in">
+        Each lab is listed with what actually got built, and dated by when the work happened on its
+        own branch &mdash; not by when it was merged. Every feature below is live in the merged
+        kernel. Open a lab for the detail.
+      </p>
+
+      <ul class="labs">
+
+        <li>
+          <details class="lab">
+            <summary>
+              <span class="lab-name">util &mdash; Xv6 and Unix utilities</span>
+              <span class="when">Jul 1</span>
+              <span class="lab-kind">Four user-space programs written against the existing syscall surface.</span>
+            </summary>
+            <div class="lab-body">
+              <ul class="feature-list">
+                <li><span class="fname">sleep</span><span>Blocks for N ticks &mdash; the smallest possible round trip through the syscall path.</span></li>
+                <li><span class="fname">sixfive</span><span>Streams a file byte by byte, parses integers out of it, and prints the ones divisible by 5 or 6.</span></li>
+                <li><span class="fname">memdump</span><span>A format-string-driven memory dumper: given a spec like <code>"ii"</code>, <code>"s"</code> or <code>"S"</code>, it decodes raw bytes as ints, pointers-to-string, or inline strings &mdash; which forces you to reason about layout, alignment and indirection rather than just printing.</span></li>
+                <li><span class="fname">find</span><span>Recursive directory walk with name matching, on xv6's own file-system API.</span></li>
+              </ul>
+            </div>
+          </details>
+        </li>
+
+        <li>
+          <details class="lab">
+            <summary>
+              <span class="lab-name">syscall &mdash; system calls and a sandbox</span>
+              <span class="when">Jul 9 &ndash; 10</span>
+              <span class="lab-kind">Kernel-side syscall machinery &mdash; then a program that attacks it.</span>
+            </summary>
+            <div class="lab-body">
+              <ul class="feature-list">
+                <li><span class="fname">interpose</span><span>A per-process sandbox: <code>sys_interpose()</code> takes a 64-bit reject mask plus one allowed path, stored in <code>struct proc</code>. A central check in <code>syscall()</code> rejects any masked call <em>before</em> dispatch, with a carve-out that lets <code>open</code> and <code>exec</code> through when their first string argument matches the allowed path. Both the mask and the path have to survive <code>fork()</code>.</span></li>
+                <li><span class="fname">attack</span><span>Recovers another process's data out of freshly allocated pages &mdash; the concrete demonstration of why <code>kalloc()</code> and <code>kfree()</code> fill memory with junk in the first place.</span></li>
+              </ul>
+            </div>
+          </details>
+        </li>
+
+        <li>
+          <details class="lab">
+            <summary>
+              <span class="lab-name">pgtbl &mdash; page tables and superpages</span>
+              <span class="when">Jul 26 &ndash; 29</span>
+              <span class="lab-kind">The heaviest lab, and the origin of half the merge conflict.</span>
+            </summary>
+            <div class="lab-body">
+              <ul class="feature-list">
+                <li><span class="fname">vmprint</span><span>Recursive page-table printer across all three Sv39 levels &mdash; the tool that makes every later page-table bug inspectable.</span></li>
+                <li><span class="fname">usyscall</span><span>A read-only page shared with each process so <code>ugetpid()</code> can read its own pid without trapping into the kernel at all.</span></li>
+                <li><span class="fname">superpage</span><span>2MB leaf PTEs at level 1: <code>mappages()</code> gained a granularity argument, and allocation, unmapping and in-place demotion each needed a superpage-aware path (<code>uvmallocsuper()</code>, <code>uvmumsuper()</code>, <code>splitpage()</code>).</span></li>
+                <li><span class="fname">dirtypages</span><span>Reports which of a process's pages are dirty by walking the table for <code>PTE_D</code> and packing the result into a bitmap &mdash; 64 pages per 64-bit word &mdash; then <code>copyout()</code>ing it to user space.</span></li>
+              </ul>
+            </div>
+          </details>
+        </li>
+
+        <li>
+          <details class="lab">
+            <summary>
+              <span class="lab-name">traps &mdash; backtraces and user-level alarms</span>
+              <span class="when">Aug 4 &ndash; 11</span>
+              <span class="lab-kind">Reading and rewriting the machine state a trap leaves behind.</span>
+            </summary>
+            <div class="lab-body">
+              <ul class="feature-list">
+                <li><span class="fname">backtrace</span><span>Walks the saved frame-pointer chain &mdash; return address at <code>fp-8</code>, caller's frame at <code>fp-16</code> &mdash; bounded by the stack page, and wired into <code>panic()</code> so every later kernel panic prints its own call chain.</span></li>
+                <li><span class="fname">sigalarm / sigreturn</span><span>Periodic user-level handlers driven by timer ticks. The saved user context lives in a <em>separate</em> <code>handframe</code> so the handler can return to exactly where it interrupted, with an <code>in_handler</code> flag guarding against re-entry while a handler is still running.</span></li>
+              </ul>
+            </div>
+          </details>
+        </li>
+
+        <li>
+          <details class="lab">
+            <summary>
+              <span class="lab-name">cow &mdash; copy-on-write fork</span>
+              <span class="when">Aug 7 &ndash; 19</span>
+              <span class="lab-kind">The other half of the merge conflict &mdash; and the branch the allocator was rebuilt on.</span>
+            </summary>
+            <div class="lab-body">
+              <ul class="feature-list">
+                <li><span class="fname">cow fork</span><span><code>fork()</code> stops duplicating memory: parent and child share frames read-only, with the original writability parked in a spare PTE bit (<code>PTE_RSW</code>) so the write-fault handler can tell a COW page from a genuinely read-only one.</span></li>
+                <li><span class="fname">refcounting</span><span>Every physical frame carries a reference count, so a shared page is returned to the pool exactly once &mdash; at 4KB <em>or</em> 2MB granularity, which is precisely where this lab collides with <code>pgtbl</code>.</span></li>
+                <li><span class="fname">allocator</span><span>The later commits on this branch are the allocator rebuild itself: a single reference-counted structure serving both page sizes. That is <a href="xv6-memory-management.html">its own write-up</a>.</span></li>
+              </ul>
+            </div>
+          </details>
+        </li>
+
+      </ul>
+    </section>
+
+    <section class="section">
+      <p class="sec-num">02 &middot; The merge</p>
+      <h2>What it cost to make five labs one kernel</h2>
+      <p class="lead-in">
+        Four sequential merges over eleven days. The first three were mostly mechanical. The last
+        one was not, because it is where two labs' claims on physical memory had to be settled.
+      </p>
+
+      <figure class="figure">
+        <div class="scroll">
+          <svg class="dia" viewBox="0 0 720 336" role="img" aria-label="Diagram: five lab branches merging sequentially into main, with the copy-on-write merge marked as where the allocator conflict was resolved">
+            <text x="104" y="34" class="t-sm muted">sleep &middot; sixfive &middot; memdump &middot; find</text>
+            <text x="92" y="48" class="bold" text-anchor="end">util</text>
+            <path class="arrow" d="M104 44 H274 Q300 44 300 70 V262" fill="none"/>
+            <circle class="fill-muted" cx="150" cy="44" r="3.5"/>
+
+            <text x="104" y="78" class="t-sm muted">interpose sandbox &middot; attack</text>
+            <text x="92" y="92" class="bold" text-anchor="end">syscall</text>
+            <path class="arrow" d="M104 88 H290 Q316 88 316 114 V262" fill="none"/>
+            <circle class="fill-muted" cx="150" cy="88" r="3.5"/>
+            <circle class="fill-muted" cx="210" cy="88" r="3.5"/>
+
+            <text x="104" y="122" class="t-sm muted">vmprint &middot; usyscall &middot; superpage &middot; dirtypages</text>
+            <text x="92" y="136" class="bold" text-anchor="end">pgtbl</text>
+            <path class="arrow" d="M104 132 H404 Q430 132 430 158 V262" fill="none"/>
+            <circle class="fill-muted" cx="150" cy="132" r="3.5"/>
+            <circle class="fill-muted" cx="230" cy="132" r="3.5"/>
+            <circle class="fill-muted" cx="310" cy="132" r="3.5"/>
+
+            <text x="104" y="166" class="t-sm muted">backtrace &middot; sigalarm / sigreturn</text>
+            <text x="92" y="180" class="bold" text-anchor="end">traps</text>
+            <path class="arrow" d="M104 176 H474 Q500 176 500 202 V262" fill="none"/>
+            <circle class="fill-muted" cx="150" cy="176" r="3.5"/>
+            <circle class="fill-muted" cx="380" cy="176" r="3.5"/>
+
+            <text x="104" y="210" class="t-sm on-accent">COW fork &middot; refcounting &middot; allocator unification</text>
+            <text x="92" y="224" class="bold on-accent" text-anchor="end">cow</text>
+            <path class="arrow-accent" d="M104 220 H590 Q616 220 616 246 V262" fill="none"/>
+            <circle class="fill-accent" cx="150" cy="220" r="3.5"/>
+            <circle class="fill-accent" cx="420" cy="220" r="3.5"/>
+            <circle class="fill-accent" cx="530" cy="220" r="3.5"/>
+
+            <line class="mainline" x1="34" y1="268" x2="700" y2="268"/>
+            <text x="92" y="290" class="bold on-accent" text-anchor="end">main</text>
+            <circle class="fill-accent" cx="300" cy="268" r="4.5"/>
+            <circle class="fill-accent" cx="316" cy="268" r="4.5"/>
+            <circle class="fill-accent" cx="430" cy="268" r="4.5"/>
+            <circle class="fill-accent" cx="500" cy="268" r="4.5"/>
+            <circle class="fill-accent" cx="616" cy="268" r="6"/>
+            <circle class="fill-muted" cx="668" cy="268" r="3.5"/>
+
+            <text x="300" y="288" class="t-sm muted" text-anchor="middle">Aug 9</text>
+            <text x="430" y="288" class="t-sm muted" text-anchor="middle">Aug 11</text>
+            <text x="500" y="302" class="t-sm muted" text-anchor="middle">Aug 11</text>
+            <text x="668" y="288" class="t-sm muted" text-anchor="middle">Aug 19</text>
+
+            <path class="arrow-accent dashed" d="M616 276 V306" marker-end="url(#l-head-a)"/>
+            <rect class="box-accent" x="430" y="308" width="280" height="26" rx="5"/>
+            <text x="444" y="325" class="t-sm on-accent bold">allocator rebuilt here &rarr; deep dive</text>
+
+            <text x="34" y="252" class="t-sm muted">time &rarr;</text>
+
+            <defs>
+              <marker id="l-head-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+                <path d="M0 0 L10 5 L0 10 z" class="fill-accent"/>
+              </marker>
+            </defs>
+          </svg>
+        </div>
+        <figcaption>
+          <b>The order matters.</b> Dates here are the merge points, not when each lab was written
+          &mdash; the lab cards above carry that. <code>util</code> and <code>syscall</code> landed
+          together, then <code>pgtbl</code>, then <code>traps</code>. The <code>cow</code> branch
+          merged last and carried more than the lab: the reference-counted allocator that
+          <code>pgtbl</code>'s superpages and <code>cow</code>'s sharing both had to agree on.
+        </figcaption>
+      </figure>
+
+      <h3>Three things the merge actually required</h3>
+      <div class="decisions">
+        <div class="decision">
+          <h4>Deleting the <code>LAB_*</code> compile-time macros</h4>
+          <p>
+            The labs ship behind <code>#ifdef LAB_PGTBL</code>-style guards, so one checkout serves
+            one lab. A kernel that does all five at once cannot be built that way, so the guards
+            came out. <strong>One was kept deliberately:</strong> <code>LAB_SYSCALL</code>, because
+            the <code>attack</code> exercise only works while <code>kalloc()</code>/<code>kfree()</code>
+            are <em>not</em> scrubbing freed pages &mdash; a real conflict between two labs'
+            requirements, resolved by keeping the switch rather than silently picking a side.
+          </p>
+        </div>
+        <div class="decision">
+          <h4>Re-checking all five labs' features after every change</h4>
+          <p>
+            Merged code breaks features that used to work &mdash; the <code>traps</code> merge, for
+            instance, arrived with <code>usertests sbrkmuch</code> and lazy allocation failing.
+            Each lab has its own test suite, and <code>usertests</code> exists to find out whether
+            the kernel has been broken, so <strong>re-running all five together after every change
+            is what makes "merged" mean something stronger than "compiles"</strong> &mdash; which
+            also meant fixing the build rules so they can all run in one pass.
+          </p>
+        </div>
+        <div class="decision">
+          <h4>Making the merged code navigable</h4>
+          <p>
+            Once five labs share the same files, "which lab does this line belong to?" becomes a
+            real question. Every non-stock block carries a searchable keyword comment &mdash;
+            <code>pgtbl_part:superpage</code>, <code>cow_part:cow</code>,
+            <code>memory_part:buddy</code>, <code>sbrk:flag</code> &mdash; so any feature's
+            implementation is one <code>grep</code> away instead of a diff archaeology exercise.
+          </p>
+        </div>
+      </div>
+
+      <p>
+        And the merge kept producing bugs after it was &quot;done&quot;. The last commits exist
+        because <code>usertests</code> failed under specific conditions once all five labs' state
+        lived in the same kernel: alarm-handler fields surviving process reuse, a sandbox path
+        copied across <code>fork()</code> without its terminator, a reject mask too narrow for the
+        syscall numbers it had to hold, and a copy-on-write frame freed at the wrong granularity.
+        <strong>Every one of them was correct while a single lab owned it</strong> &mdash; which is
+        exactly the class of bug a merged kernel produces and a single lab cannot.
+        <a href="xv6-debugging.html">Those are written up here.</a>
+      </p>
+    </section>
+
+    <section class="section">
+      <p class="sec-num">03 &middot; Next</p>
+      <h2>Still open</h2>
+      <p>
+        Four labs remain, and I am taking them in order &mdash; one lab, then one merge, then the
+        next. <strong>Networking is next</strong>, followed by locks, the file system, and
+        <code>mmap</code>.
+      </p>
+      <p>
+        The <code>locks</code> lab is the one this project is already pointed at, because per-CPU
+        free lists are exactly the trade-off the current allocator deliberately declined to make:
+        a single global lock was the right call for getting the merge correct, and it is the first
+        thing that should change once correctness is no longer the scarce resource.
+      </p>
+    </section>
+
+  </div>
+
+  <nav class="doc-nav">
+    <a class="nav-card" href="xv6-memory-management.html">
+      <span class="kind">Deep dive &rarr;</span>
+      <span class="what">Refactoring the physical memory allocator</span>
+      <span class="why">One structure, one lock, two page granularities, and reference counting that COW and superpages share.</span>
+    </a>
+    <a class="nav-card" href="xv6-debugging.html">
+      <span class="kind">Deep dive &rarr;</span>
+      <span class="what">Debugging a merged kernel</span>
+      <span class="why">Two bugs that turned out to be outside the new code, and the ones only a merged kernel can have.</span>
+    </a>
+    <a class="nav-card" href="https://github.com/z-jing-han/xv6-riscv" target="_blank" rel="noopener">
+      <span class="kind">Source &rarr;</span>
+      <span class="what">z-jing-han/xv6-riscv</span>
+      <span class="why">The merged kernel, with every lab's features live at once.</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-row">
+    <p>&copy; <span id="year"></span> Ching-Han Cheng</p>
+  </div>
+</footer>
+
+<script src="../script.js"></script>
+</body>
+</html>

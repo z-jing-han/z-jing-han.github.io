@@ -63,6 +63,7 @@
       <div class="meta-item">
         <span class="meta-label">Thesis</span>
         <span class="meta-value">Decentralized Workload Offloading for Carbon Reduction and Queue Stability in a Hybrid Cloud-Edge Environment</span>
+        <span class="meta-value meta-sub"><a href="projects/thesis-carbon-aware-offloading.html">Deriving transmission power instead of learning it &rarr;</a></span>
       </div>
       <div class="meta-item">
         <span class="meta-label">Focus</span>
@@ -89,8 +90,12 @@
         </div>
         <p class="project-sub">MIT 6.1810 Operating Systems Labs &middot; Self-study, in progress</p>
         <ul class="project-points">
-          <li>Independently completed the first 5 kernel labs, then resolved cross-subsystem merge conflicts (page tables, copy-on-write) to unify them into one regression-free kernel.</li>
-          <li>Designed a two-tier (4KB page / 2MB superpage) buddy-style physical memory allocator with automatic split/coalesce, and extended the <code>sbrk</code> syscall with eager/lazy and normal/super allocation flags.</li>
+          <li>Independently completed 5 of MIT 6.1810's kernel labs (utilities, syscalls, traps, page tables, copy-on-write fork) and merged them into one regression-free kernel, resolving cross-lab conflicts in the shared page-table and memory-allocation code.
+            <a class="bullet-link" href="projects/xv6-labs-overview.html">Five labs, one kernel &rarr;</a></li>
+          <li>Designed a single reference-counted allocator that unifies 4KB pages and 2MB superpages under one lock, letting copy-on-write fork and superpage allocation share the same frame-tracking logic &mdash; plus a two-tier <code>sbrk</code> interface with eager/lazy and normal/super allocation flags.
+            <a class="bullet-link" href="projects/xv6-memory-management.html">Allocator design &rarr;</a></li>
+          <li>Root-caused a pair of masking bugs in the kernel's page-mapping routine (an off-by-one loop bound and a hardcoded page-size constant that happened to cancel each other out) using GDB register/memory inspection, then wrote a standalone diagnostic to separate a real allocator leak from a flawed test measurement.
+            <a class="bullet-link" href="projects/xv6-debugging.html">Debugging a merged kernel &rarr;</a></li>
         </ul>
         <div class="project-footer">
           <div class="tags">
@@ -144,12 +149,15 @@
         </div>
         <p class="project-sub">NYCU &mdash; Advanced Programming in the UNIX Environment</p>
         <ul class="project-points">
-          <li>Implemented a Linux kernel module with AES encryption/decryption functionality.</li>
-          <li>Supported read, write, and ioctl system calls, and verified concurrent read-write operation and thread safety.</li>
+          <li>Designed a per-file-descriptor AES-ECB crypto device (<code>/dev/cryptodev</code>), with each opened fd maintaining independent encryption state via <code>file->private_data</code>.</li>
+          <li>Exposed live telemetry (byte counters, 256-entry byte-frequency histogram) through <code>/proc/cryptomod</code>, synchronized with a global mutex to remain race-free under concurrent access &mdash; including PKCS#7 padding/unpadding with strict validation against malformed ciphertext.</li>
+          <li>Debugged and resolved a kernel panic caused by a buffer-size/<code>kmalloc</code>-<code>kfree</code> mismatch under concurrent multi-threaded stress testing.
+            <a class="bullet-link" href="projects/aes-kernel-debugging.html">Debugging a double-free &rarr;</a></li>
+          <li>Integrated the kernel's asynchronous Crypto API (<code>crypto_skcipher</code>, scatterlists) for AES-ECB operations, and designed a streaming <code>ADV</code> I/O mode that withholds the final ciphertext block during decryption until finalize.</li>
         </ul>
         <div class="project-footer">
           <div class="tags">
-            <span class="tag">C</span><span class="tag">QEMU</span>
+            <span class="tag">C</span><span class="tag">QEMU</span><span class="tag">Docker</span>
           </div>
           <a class="project-link" href="https://github.com/z-jing-han/Advance-Programming-in-UNIX-system/tree/master/lab2/todo" target="_blank" rel="noopener">GitHub &rarr;</a>
         </div>

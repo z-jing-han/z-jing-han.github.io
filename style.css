@@ -95,7 +95,7 @@ code {
   flex-wrap: wrap;
   gap: 10px 24px;
   min-height: 64px;
-  padding: 10px 0;
+  padding-block: 10px;
 }
 
 .brand {
@@ -358,6 +358,15 @@ code {
 
 .project-link {
   font-size: 0.88rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bullet-link {
+  display: inline-block;
+  margin-left: 4px;
+  color: var(--accent);
+  font-size: 0.86rem;
   font-weight: 600;
   white-space: nowrap;
 }
