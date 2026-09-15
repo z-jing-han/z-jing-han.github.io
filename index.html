@@ -112,12 +112,14 @@
         </div>
         <p class="project-sub">NYCU &mdash; Advanced Programming in the UNIX Environment</p>
         <ul class="project-points">
-          <li>Built an instruction-level debugger, validated by correct breakpoint handling and syscall tracing.</li>
-          <li>Implemented <code>ptrace</code>-based process control, memory patching, and disassembly support.</li>
+          <li>Designed an address-keyed breakpoint table &mdash; supporting multiple breakpoint IDs on the same instruction &mdash; around a deferred-restore model: a hit breakpoint's original byte is written back only right before the next resume, not immediately. This replaced an earlier eager-restore design that could not reliably resume execution through jump-type instructions once a breakpoint was involved.
+            <a class="bullet-link" href="projects/sdb-breakpoint-recovery.html">Redesigning breakpoint recovery &rarr;</a></li>
+          <li>Built the command-dispatch loop around a three-way return protocol, letting a single outer loop distinguish commands that already consumed a <code>waitpid()</code> call from ones that still need one &mdash; keeping single-step, continue, and syscall-tracing state consistent across breakpoint hits.</li>
+          <li>Resolved the true entry point and load base of PIE and dynamically linked binaries via <code>/proc/[pid]/auxv</code> and <code>/proc/[pid]/exe</code>, so offset-based breakpoints (<code>breakrva</code>) stay correct despite ASLR.</li>
         </ul>
         <div class="project-footer">
           <div class="tags">
-            <span class="tag">C++</span><span class="tag">Capstone</span>
+            <span class="tag">C++</span><span class="tag">ptrace</span><span class="tag">Capstone</span>
           </div>
           <a class="project-link" href="https://github.com/z-jing-han/Advance-Programming-in-UNIX-system/tree/master/hw2/todo" target="_blank" rel="noopener">GitHub &rarr;</a>
         </div>
