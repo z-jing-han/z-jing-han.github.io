@@ -112,11 +112,11 @@
         </div>
         <p class="project-sub">NYCU &mdash; Advanced Programming in the UNIX Environment</p>
         <ul class="project-points">
-          <li>Designed an address-keyed breakpoint table &mdash; supporting multiple breakpoint IDs on the same instruction &mdash; around a deferred-restore model: a hit breakpoint's original byte is written back only right before the next resume, not immediately. This replaced an earlier eager-restore design that could not reliably resume execution through jump-type instructions once a breakpoint was involved.
-            <a class="bullet-link" href="projects/sdb-breakpoint-recovery.html">Redesigning breakpoint recovery &rarr;</a></li>
+          <li>Designed an address-keyed breakpoint table &mdash; supporting multiple breakpoint IDs on the same instruction &mdash; around a deferred-restore model: a hit breakpoint's original byte is written back only right before the next resume, not immediately. This replaced an earlier eager-restore design that could not reliably resume execution through jump-type instructions once a breakpoint was involved.</li>
           <li>Built the command-dispatch loop around a three-way return protocol, letting a single outer loop distinguish commands that already consumed a <code>waitpid()</code> call from ones that still need one &mdash; keeping single-step, continue, and syscall-tracing state consistent across breakpoint hits.</li>
           <li>Resolved the true entry point and load base of PIE and dynamically linked binaries via <code>/proc/[pid]/auxv</code> and <code>/proc/[pid]/exe</code>, so offset-based breakpoints (<code>breakrva</code>) stay correct despite ASLR.</li>
         </ul>
+        <p class="card-link"><a href="projects/sdb-breakpoint-recovery.html">Redesigning breakpoint recovery &rarr;</a></p>
         <div class="project-footer">
           <div class="tags">
             <span class="tag">C++</span><span class="tag">ptrace</span><span class="tag">Capstone</span>
@@ -132,13 +132,15 @@
         </div>
         <p class="project-sub">NYCU &mdash; Network Programming</p>
         <ul class="project-points">
-          <li>Developed a multi-client shell server, extending built-in commands with broadcast messaging and firewall rules.</li>
-          <li>Implemented single-process concurrent connections and user-to-user pipe communication.</li>
-          <li>Added a concurrent-connected paradigm with per-user environment management and shared-memory synchronization, integrating signals and FIFO-based user pipes.</li>
+          <li>Implemented a multi-client shell server two different ways: a single process multiplexing every client with <code>select()</code>, and a process-per-client design that coordinates shared state through POSIX shared memory and signals instead of one address space.</li>
+          <li>The <code>select()</code> design serves up to 40 clients from one process by <code>dup2</code>-ing its stdin/stdout/stderr onto whichever client socket has a line ready, then restoring them before the next cycle.</li>
+          <li>Built a second server around one process per client, keeping the connection table, broadcast buffer, and inter-user pipe status in POSIX shared memory, coordinated by <code>SIGUSR1</code>/<code>SIGUSR2</code> signals across processes.</li>
+          <li>Built the underlying shell's command-pipeline engine (ordinary and numbered pipes <code>|N</code>, redirection, and background execution), reused unmodified as the per-connection interpreter in both server designs.</li>
         </ul>
+        <p class="card-link"><a href="projects/np-server-architecture.html">Two concurrency models, one shell server &rarr;</a></p>
         <div class="project-footer">
           <div class="tags">
-            <span class="tag">C++</span>
+            <span class="tag">C++</span><span class="tag">Sockets</span><span class="tag">select()</span><span class="tag">Shared Memory</span>
           </div>
           <a class="project-link" href="https://github.com/z-jing-han/Network-Programming" target="_blank" rel="noopener">GitHub &rarr;</a>
         </div>
@@ -153,10 +155,10 @@
         <ul class="project-points">
           <li>Designed a per-file-descriptor AES-ECB crypto device (<code>/dev/cryptodev</code>), with each opened fd maintaining independent encryption state via <code>file->private_data</code>.</li>
           <li>Exposed live telemetry (byte counters, 256-entry byte-frequency histogram) through <code>/proc/cryptomod</code>, synchronized with a global mutex to remain race-free under concurrent access &mdash; including PKCS#7 padding/unpadding with strict validation against malformed ciphertext.</li>
-          <li>Debugged and resolved a kernel panic caused by a buffer-size/<code>kmalloc</code>-<code>kfree</code> mismatch under concurrent multi-threaded stress testing.
-            <a class="bullet-link" href="projects/aes-kernel-debugging.html">Debugging a double-free &rarr;</a></li>
+          <li>Debugged and resolved a kernel panic caused by a buffer-size/<code>kmalloc</code>-<code>kfree</code> mismatch under concurrent multi-threaded stress testing.</li>
           <li>Integrated the kernel's asynchronous Crypto API (<code>crypto_skcipher</code>, scatterlists) for AES-ECB operations, and designed a streaming <code>ADV</code> I/O mode that withholds the final ciphertext block during decryption until finalize.</li>
         </ul>
+        <p class="card-link"><a href="projects/aes-kernel-debugging.html">Debugging a double-free &rarr;</a></p>
         <div class="project-footer">
           <div class="tags">
             <span class="tag">C</span><span class="tag">QEMU</span><span class="tag">Docker</span>

@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Two Concurrency Models, One Shell Server</title>
+<meta name="description" content="How the same shell interpreter is served two different ways: np_single_proc.cpp's single select() process, where cross-user pipes are just a map keyed by sender and receiver, and np_multi_proc.cpp's process-per-client design, where the same hand-off is rebuilt through shared memory and signals.">
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../style.css">
+<link rel="stylesheet" href="writeup.css">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="wrap header-row">
+    <a class="brand" href="../index.html">Ching-Han Cheng <span class="brand-zh">(鄭璟翰)</span></a>
+    <div class="header-controls">
+      <nav class="nav">
+        <a href="../index.html#about">About</a>
+        <a href="../index.html#projects">Projects</a>
+        <a href="../assets/resume.pdf" target="_blank" rel="noopener">Resume</a>
+      </nav>
+      <div class="social-links">
+        <a class="social-link" href="https://github.com/z-jing-han" target="_blank" rel="noopener" aria-label="GitHub">
+          <svg class="icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          <span>GitHub</span>
+        </a>
+      </div>
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Toggle dark mode">
+        <svg class="icon icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="icon icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <section class="doc-hero wrap">
+    <a class="backlink" href="../index.html#projects">&larr; Projects</a>
+    <p class="eyebrow">Remote Working Ground Server &middot; Architecture</p>
+    <h1>Two concurrency models, one shell server</h1>
+    <p class="dek">
+      A multi-client shell interpreter is served two different ways: a single process
+      multiplexing every client with <code>select()</code>, and a process-per-client design
+      where independent processes coordinate through POSIX shared memory and signals instead
+      of one shared address space.
+    </p>
+    <div class="doc-meta">
+      <span>C++ &middot; Sockets &middot; POSIX IPC</span>
+      <span>Spring 2025</span>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="tldr">
+      <p class="tldr-label">In short</p>
+      <p>
+        <code>np_single_proc.cpp</code> and <code>np_multi_proc.cpp</code> put one shell
+        interpreter behind two different server designs: a single process multiplexing every
+        client with <code>select()</code>, and a process-per-client design synchronized
+        through POSIX shared memory and signals.
+      </p>
+      <p>
+        This page covers what the project-card bullets don't have room for: how
+        <code>np_single_proc.cpp</code>'s in-process map hands one client's output to
+        another, and how <code>np_multi_proc.cpp</code> rebuilds that same hand-off once
+        every client is its own OS process.
+      </p>
+      <div class="stat-row">
+        <div class="stat">
+          <span class="stat-num">2</span>
+          <span class="stat-label">Server architectures built around one shell interpreter</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num">40</span>
+          <span class="stat-label">Concurrent clients one select() process multiplexes at once</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num">4</span>
+          <span class="stat-label">Shared-memory segments standing in for one process's private state</span>
+        </div>
+        <div class="stat">
+          <span class="stat-num">2</span>
+          <span class="stat-label">Signals (SIGUSR1/SIGUSR2) coordinating events across processes</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="doc-body wrap">
+
+    <section class="section">
+      <p class="sec-num">01 &middot; Single Process with Select</p>
+      <h2>One process, serving every client</h2>
+      <p class="lead-in">
+        <code>select()</code> reports which connected client socket has a line waiting. The
+        process has exactly one stdin, one stdout and one set of environment variables, so it
+        borrows them for whichever client is ready, handles one line, and gives them back
+        before asking <code>select()</code> again &mdash; no <code>fork()</code>, no second
+        process, ever.
+      </p>
+      <div class="code-block"><pre><code><span class="cm">// np_single_proc.cpp:94-96, 106 — save stdio once, select() every cycle</span>
+dup2(STDIN_FILENO, 4);
+dup2(STDOUT_FILENO, 5);
+dup2(STDERR_FILENO, 6);
+<span class="cm">/* ... */</span>
+select(max_fd_history+1, &amp;rset, NULL, NULL, (struct timeval *)0);</code></pre></div>
+      <div class="code-block"><pre><code><span class="cm">// np_single_proc.cpp:202-219 — borrow stdio for one client, one line</span>
+if (FD_ISSET(client_fd_table[i], &amp;rset)) {
+    clearenv();
+    for (auto env : User_Info_Map[i].EnvVar)
+        setenv(env.first.c_str(), env.second.c_str(), 1);
+
+    dup2Client(client_fd_table[i]);                 <span class="cm">// borrow stdio</span>
+    npshell_handle_one_line(User_Info_Map, i, &amp;exit, client_fd_table, firewall);
+
+    dup2(4, STDIN_FILENO);                          <span class="cm">// give it back</span>
+    dup2(5, STDOUT_FILENO);
+    dup2(6, STDERR_FILENO);
+}</code></pre></div>
+      <div class="note">
+        <b>The cost of this design:</b> because every client's turn runs to completion inside
+        the same one process, nothing else can happen &mdash; including servicing
+        <em>another</em> client's socket &mdash; until <code>npshell_handle_one_line()</code>
+        returns. A command that can't finish quickly stalls every other connected client, not
+        just its own.
+      </div>
+
+      <p>
+        That single address space is also what makes cross-user pipes simple here: forwarding
+        Client 1's output to Client 2 is just an ordinary <code>map</code> this one process
+        already owns.
+      </p>
+      <div class="code-block"><pre><code><span class="cm">// npshell.cpp:14 — one map, keyed by (sender, receiver)</span>
+map&lt;pair&lt;int,int&gt;, struct pipeStruct&gt; UserPipes;</code></pre></div>
+
+      <figure class="figure">
+        <div class="scroll">
+          <svg class="dia" viewBox="0 0 720 220" role="img" aria-label="Diagram of UserPipes, a map keyed by sender and receiver pair. Client 1 runs ls redirected to user 2, which inserts the key {1, 2} into the map with a pipe as its value, and writes ls's output into that pipe. Client 2 runs cat reading from user 1, which looks up the same key {1, 2} in the map, finds the same pipe, and reads from it.">
+            <rect class="box-plain" x="20" y="90" width="130" height="50" rx="4"/>
+            <text x="32" y="120" class="t-sm bold">Client 1</text>
+
+            <rect class="box-plain" x="570" y="90" width="130" height="50" rx="4"/>
+            <text x="582" y="120" class="t-sm bold">Client 2</text>
+
+            <rect class="box-plain" x="195" y="25" width="260" height="150" rx="8"/>
+            <text x="210" y="48" class="bold">UserPipes</text>
+            <text x="210" y="64" class="t-sm muted">map&lt;pair&lt;int,int&gt;, pipe&gt;</text>
+
+            <rect class="box-accent" x="210" y="80" width="100" height="70" rx="4"/>
+            <text x="222" y="100" class="t-sm on-accent">key</text>
+            <text x="222" y="128" class="t-sm bold on-accent">{1, 2}</text>
+
+            <path class="arrow" d="M310 115 H335" marker-end="url(#up-muted-head)"/>
+
+            <rect class="box-good" x="335" y="80" width="110" height="70" rx="4"/>
+            <text x="347" y="100" class="t-sm on-good">value</text>
+            <text x="347" y="124" class="t-sm bold on-good">pipe</text>
+            <text x="347" y="140" class="t-sm on-good">fd[0] &middot; fd[1]</text>
+
+            <text x="210" y="200" class="t-sm muted">UserPipes[{1, 2}] = pipe</text>
+
+            <text x="160" y="72" text-anchor="middle" class="t-sm bold">ls &gt;2</text>
+            <text x="160" y="86" text-anchor="middle" class="t-sm muted">insert &amp; write()</text>
+            <path class="arrow" d="M150 115 H210" marker-end="url(#up-muted-head)"/>
+
+            <text x="507" y="72" text-anchor="middle" class="t-sm bold">cat &lt;1</text>
+            <text x="507" y="86" text-anchor="middle" class="t-sm on-good">lookup &amp; read()</text>
+            <path class="arrow-good" d="M445 115 H570" marker-end="url(#up-good-head)"/>
+
+            <defs>
+              <marker id="up-muted-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="fill-muted"/></marker>
+              <marker id="up-good-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0 0 L10 5 L0 10 z" class="fill-good"/></marker>
+            </defs>
+          </svg>
+        </div>
+        <figcaption>
+          <b>Keyed by who's talking to whom.</b> <code>ls &gt;2</code> inserts
+          <code>{1, 2}</code> into <code>UserPipes</code> with a fresh pipe as its value, and
+          writes into it. <code>cat &lt;1</code> looks up that same key to find the same pipe
+          and reads from it &mdash; an ordinary map lookup, not a search.
+        </figcaption>
+      </figure>
+    </section>
+
+    <section class="section">
+      <p class="sec-num">02 &middot; Multi-Process with Shared Memory</p>
+      <h2>One process per client, joined by shared memory</h2>
+      <p class="lead-in">
+        Going back to a process per client buys back OS-level isolation, but a forked process
+        doesn't inherit a live view of who else is connected. Everything that used to be a
+        variable in one process &mdash; the connection table, the broadcast buffer, the pipe
+        between two users &mdash; now has to live somewhere every process can reach.
+      </p>
+      <div class="code-block"><pre><code><span class="cm">// np_multi_proc.cpp:76-105 — four segments replacing one process's private state</span>
+UserInfo_fd        = shm_open("UserInfo", O_CREAT | O_RDWR, 0666);   <span class="cm">// connection table, incl. each user's pid</span>
+MSG_fd              = shm_open("msg", O_CREAT | O_RDWR, 0666);        <span class="cm">// broadcast message buffer</span>
+UserPipeMatrix_fd   = shm_open("UserPipeMatrix", O_CREAT | O_RDWR, 0666); <span class="cm">// per-pair pipe status</span>
+Firewall_fd[i]      = shm_open(("firewall[" + to_string(i) + "]").c_str(), O_CREAT | O_RDWR, 0666);</code></pre></div>
+      <p>
+        A cross-user pipe becomes a named FIFO instead of a <code>map</code> entry, and
+        <code>SIGUSR1</code>/<code>SIGUSR2</code> signals stand in for the function calls one
+        process could have made directly &mdash; the sequence below is how a connection is
+        made and a message crosses from one client's process to another's.
+      </p>
+
+      <div class="storyboard" id="multiProcStoryboard" tabindex="0">
+        <div class="storyboard-stage">
+          <button type="button" class="storyboard-btn storyboard-btn-prev" aria-label="Previous step">&larr;</button>
+          <img class="storyboard-img" src="assets/np-multi-proc/1-Init.png" alt="">
+          <button type="button" class="storyboard-btn storyboard-btn-next" aria-label="Next step">&rarr;</button>
+        </div>
+        <p class="storyboard-cap"></p>
+        <div class="storyboard-dots" role="tablist" aria-label="Storyboard steps">
+          <button type="button" class="storyboard-dot" data-index="0" aria-label="Step 1">1</button>
+          <button type="button" class="storyboard-dot" data-index="1" aria-label="Step 2">2</button>
+          <button type="button" class="storyboard-dot" data-index="2" aria-label="Step 3">3</button>
+          <button type="button" class="storyboard-dot" data-index="3" aria-label="Step 4">4</button>
+          <button type="button" class="storyboard-dot" data-index="4" aria-label="Step 5">5</button>
+          <button type="button" class="storyboard-dot" data-index="5" aria-label="Step 6">6</button>
+          <button type="button" class="storyboard-dot" data-index="6" aria-label="Step 7">7</button>
+          <button type="button" class="storyboard-dot" data-index="7" aria-label="Step 8">8</button>
+          <button type="button" class="storyboard-dot" data-index="8" aria-label="Step 9">9</button>
+          <button type="button" class="storyboard-dot" data-index="9" aria-label="Step 10">10</button>
+        </div>
+      </div>
+      <script>
+        (function () {
+          var frames = [
+            { src: "assets/np-multi-proc/1-Init.png", alt: "The listening Server and Client 1, drawn apart, not yet connected.",
+              cap: "The listening <code>Server</code> and <code>Client 1</code>, not yet connected." },
+            { src: "assets/np-multi-proc/2-Connect.png", alt: "Client 1 connects to the Server over telnet.",
+              cap: "Client 1 connects over <code>telnet</code>." },
+            { src: "assets/np-multi-proc/3-fork.png", alt: "fork creates Server 1, running npshell, connected to Client 1.",
+              cap: "<code>accept()</code> returns a socket; <code>fork()</code> spins up <code>Server 1</code>, running <code>npshell</code> over that connection." },
+            { src: "assets/np-multi-proc/4-fork-end.png", alt: "The top-level Server keeps listening, separate from Server 1.",
+              cap: "The top-level <code>Server</code> keeps listening for new connections." },
+            { src: "assets/np-multi-proc/5-parent-close.png", alt: "Server 1 alone, connected to Client 1.",
+              cap: "The parent <code>Server</code> closes its own copy of the connection (<code>close(client_fd)</code>) &mdash; <code>Server 1</code> now owns it by itself." },
+            { src: "assets/np-multi-proc/6-client2.png", alt: "A second, independent Server 2 connected to Client 2.",
+              cap: "A second client repeats the same steps, in its own independent process, <code>Server 2</code>." },
+            { src: "assets/np-multi-proc/7-client1-send-rq.png", alt: "Client 1 sends ls redirected to user 2.",
+              cap: "Client 1 runs <code>ls &gt;2</code> &mdash; output meant for a process <code>Server 1</code> shares no memory with." },
+            { src: "assets/np-multi-proc/8-create-tube.png", alt: "Server 1 creates a FIFO in shared memory.",
+              cap: "<code>Server 1</code> creates a FIFO and records it in shared memory &mdash; the only place the two processes can meet." },
+            { src: "assets/np-multi-proc/9-client2-send-rq.png", alt: "Client 2 sends cat reading from user 1.",
+              cap: "Client 2 runs <code>cat &lt;1</code>, asking to read what Client 1 sent." },
+            { src: "assets/np-multi-proc/10-read-from-tube.png", alt: "Server 2 reads Client 1's output through the shared FIFO.",
+              cap: "<code>Server 2</code> opens the same FIFO and reads Client 1's output through it." }
+          ];
+
+          var root = document.getElementById("multiProcStoryboard");
+          var img = root.querySelector(".storyboard-img");
+          var cap = root.querySelector(".storyboard-cap");
+          var prevBtn = root.querySelector(".storyboard-btn-prev");
+          var nextBtn = root.querySelector(".storyboard-btn-next");
+          var dots = root.querySelectorAll(".storyboard-dot");
+          var current = 0;
+
+          function render() {
+            var f = frames[current];
+            img.src = f.src;
+            img.alt = f.alt;
+            cap.innerHTML = "<span class=\"storyboard-num\">" + (current + 1) + " / " + frames.length + "</span> " + f.cap;
+            prevBtn.disabled = current === 0;
+            nextBtn.disabled = current === frames.length - 1;
+            dots.forEach(function (d, i) {
+              d.classList.toggle("is-active", i === current);
+              d.setAttribute("aria-selected", i === current ? "true" : "false");
+            });
+          }
+
+          function go(i) {
+            current = Math.max(0, Math.min(frames.length - 1, i));
+            render();
+          }
+
+          prevBtn.addEventListener("click", function () { go(current - 1); });
+          nextBtn.addEventListener("click", function () { go(current + 1); });
+          dots.forEach(function (d, i) {
+            d.addEventListener("click", function () { go(i); });
+          });
+          root.addEventListener("keydown", function (e) {
+            if (e.key === "ArrowLeft") { go(current - 1); }
+            if (e.key === "ArrowRight") { go(current + 1); }
+          });
+
+          render();
+        })();
+      </script>
+    </section>
+
+  </div>
+
+  <nav class="doc-nav">
+    <a class="nav-card" href="../index.html#projects">
+      <span class="kind">&larr; Back</span>
+      <span class="what">Remote Working Ground Server</span>
+      <span class="why">The project card, with the headline architecture bullets this page doesn't repeat.</span>
+    </a>
+    <a class="nav-card" href="https://github.com/z-jing-han/Network-Programming/blob/main/project-2/todo/np_single_proc.cpp" target="_blank" rel="noopener">
+      <span class="kind">Source &rarr;</span>
+      <span class="what">
+        <svg class="icon icon-inline" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        np_single_proc.cpp
+      </span>
+      <span class="why">The select() design's server &mdash; every line number above is a link into this file.</span>
+    </a>
+    <a class="nav-card" href="https://github.com/z-jing-han/Network-Programming/blob/main/project-3/todo/np_multi_proc.cpp" target="_blank" rel="noopener">
+      <span class="kind">Source &rarr;</span>
+      <span class="what">
+        <svg class="icon icon-inline" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        np_multi_proc.cpp
+      </span>
+      <span class="why">The shared-memory design's server &mdash; every line number above is a link into this file.</span>
+    </a>
+  </nav>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-row">
+    <p>&copy; <span id="year"></span> Ching-Han Cheng</p>
+  </div>
+</footer>
+
+<script src="../script.js"></script>
+</body>
+</html>

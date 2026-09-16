@@ -637,6 +637,90 @@
   line-height: 1.52;
 }
 
+/* ---------- storyboard (hand-drawn diagram slideshow) ---------- */
+
+.doc-body .storyboard {
+  margin: 0 0 24px;
+  outline: none;
+}
+
+.storyboard-stage {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 20px;
+  background: #ffffff;
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+}
+
+.storyboard-img {
+  min-width: 0;
+  max-width: 560px;
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.storyboard-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.storyboard-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.storyboard-btn:disabled { opacity: 0.32; cursor: default; }
+
+.doc-body .storyboard-cap {
+  margin: 14px 0 0;
+  max-width: none;
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--text-muted);
+  text-align: center;
+}
+.storyboard-cap code { font-size: 0.85em; }
+
+.storyboard-num {
+  margin-right: 6px;
+  font-family: var(--font-mono);
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+}
+
+.storyboard-dots {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 14px;
+}
+.storyboard-dot {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--bg-raised);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+.storyboard-dot:hover { border-color: var(--accent); color: var(--accent); }
+.storyboard-dot.is-active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+}
+
 /* ---------- responsive ---------- */
 
 @media (max-width: 700px) {
@@ -648,4 +732,6 @@
   .doc-body .principles { grid-template-columns: 1fr; }
   .anatomy-row { grid-template-columns: 1fr; gap: 6px; }
   .feature-list li { grid-template-columns: 1fr; gap: 2px; }
+  .storyboard-stage { padding: 14px; gap: 8px; }
+  .storyboard-btn { width: 30px; height: 30px; font-size: 0.9rem; }
 }
