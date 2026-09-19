@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Why Breakpoints Can't Restore Themselves Immediately</title>
-<meta name="description" content="Designing an instruction-level ptrace debugger's breakpoint table: why eagerly restoring a trapped instruction breaks resuming through jumps, the deferred-restore model that replaced it, and the three-way return protocol coordinating its dispatch loop.">
+<title>sdb Breakpoint Handling</title>
+<meta name="description" content="How the sdb instruction-level debugger restores and re-inserts breakpoints, and how its command loop decides when to call waitpid().">
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -42,18 +42,16 @@
   <section class="doc-hero wrap">
     <a class="backlink" href="../index.html#sdb">&larr; Projects</a>
     <p class="eyebrow">Single Instruction Debugger &middot; Design</p>
-    <h1>Why breakpoints can't restore themselves immediately</h1>
+    <h1>Breakpoint handling in sdb</h1>
     <p class="dek">
-      A <code>ptrace</code>-based breakpoint works by overwriting one byte of the target
-      program with <code>0xCC</code>, then putting the original byte back before that
-      instruction ever really runs. Getting the timing of that swap right &mdash; exactly
-      one instruction removed, then reinserted, no matter what kind of instruction it is
-      &mdash; turned out to be the hardest part of the whole debugger.
+      sdb is an instruction-level debugger for x86-64 Linux, built on <code>ptrace</code> with
+      Capstone for disassembly. The hardest part was restoring and re-inserting the
+      <code>0xCC</code> byte at the right time. My first design did not consider breakpoints on jump
+      instructions, so I rewrote it.
     </p>
     <div class="doc-meta">
       <span>C++ &middot; ptrace &middot; Capstone</span>
-      <span>todo/sdb.cpp</span>
-      <span>Spring 2025</span>
+      <span>Spring 2025 &middot; refactored Sep 2026</span>
     </div>
   </section>
 
@@ -61,93 +59,59 @@
     <div class="tldr">
       <p class="tldr-label">In short</p>
       <p>
-        <code>sdb.cpp</code> is a from-scratch, instruction-level debugger for x86-64
-        Linux binaries &mdash; static, dynamically linked, or PIE &mdash; built directly on
-        <code>ptrace</code> and <code>/proc/[pid]/{mem,maps,auxv}</code>, with disassembly via
-        Capstone.
+        sdb supports <code>load</code>, <code>si</code>, <code>cont</code>, <code>info reg</code>,
+        <code>info break</code>, <code>break</code>, <code>breakrva</code>, <code>delete</code>,
+        <code>patch</code> and <code>syscall</code>, on static, dynamically linked and PIE binaries.
+        The process setup and the memory-map reader (<code>ptools.cpp</code>) come from the course
+        examples. This page covers the breakpoint design and how the command loop knows when to call
+        <code>waitpid()</code>.
       </p>
-      <p>
-        This page covers what the project-card bullets don't have room for: a breakpoint
-        design that had to be rebuilt after its first version couldn't reliably resume
-        through jump-type instructions, and the dispatch protocol that keeps single-step,
-        continue, and syscall-tracing consistent around it.
-      </p>
-      <div class="stat-row">
-        <div class="stat">
-          <span class="stat-num">10</span>
-          <span class="stat-label">Commands implemented, from load to syscall tracing</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">3</span>
-          <span class="stat-label">Return states coordinating the command-dispatch loop</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">0xCC</span>
-          <span class="stat-label">The int3 trap byte swapped over the target instruction</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">2</span>
-          <span class="stat-label">State flags per breakpoint — hit and active — deciding whether the trap byte returns</span>
-        </div>
-      </div>
     </div>
   </section>
 
   <div class="doc-body wrap">
 
     <section class="section">
-      <p class="sec-num">01 &middot; Mechanism</p>
-      <h2>A trap byte that has to disappear, then reappear</h2>
-      <p class="lead-in">
-        Setting a breakpoint means writing <code>0xCC</code> (<code>int3</code>) over the
-        first byte of an instruction. When the CPU reaches it, it traps into the kernel and
-        <code>ptrace</code> reports a stop &mdash; but the instruction that was supposed to
-        run is now gone from memory. Every command that resumes the target has to put it
-        back first, and every breakpoint that's still meant to fire has to be re-armed
-        afterward.
-      </p>
+      <h2>How a breakpoint works</h2>
       <p>
-        A hit is detected by rewinding <code>$rip</code> by one: after an <code>int3</code>
-        traps, the CPU has already advanced past it, so the byte it actually executed sits
-        at <code>$rip&nbsp;-&nbsp;1</code>. <code>sdb</code> checks that address against the
-        breakpoint table before falling back to checking <code>$rip</code> itself, for the
-        case where a breakpoint was set exactly where execution already sits and hasn't
-        been stepped over yet.
+        A breakpoint replaces the first byte of an instruction with <code>0xCC</code>
+        (<code>int3</code>). When the CPU executes it, the process stops with <code>rip</code> one
+        byte past the breakpoint. sdb checks whether <code>rip - 1</code> is a breakpoint address and,
+        if so, moves <code>rip</code> back by one. It also checks <code>rip</code> itself, for a
+        breakpoint set at the address where the program is already stopped.
       </p>
       <div class="code-block"><pre><code><span class="cm">// sdb.cpp:24-32</span>
 struct breakInfo {
-    vector&lt;int&gt; num;          <span class="cm">// every user-visible ID sharing this address</span>
+    vector&lt;int&gt; num;          <span class="cm">// breakpoint IDs at this address</span>
     unsigned char originalByte;
-    bool active;               <span class="cm">// still installed, or just kept for bookkeeping</span>
-    bool hit;                  <span class="cm">// currently sitting with the trap byte removed</span>
+    bool active;               <span class="cm">// false only for the entry-point stop (ID -1)</span>
+    bool hit;                  <span class="cm">// stopped here; step over before resuming</span>
 };
 
 constexpr unsigned char INT3 = 0xcc;
 map&lt;unsigned long, struct breakInfo&gt; breakInfoMap;</code></pre></div>
       <p class="code-cap">
-        Keyed by address rather than by breakpoint ID, so two IDs set on the same
-        instruction share one trap byte and one <code>hit</code>/<code>active</code> state
-        &mdash; deleting one leaves the address, and the other ID, untouched.
+        The table is keyed by address, so several breakpoint IDs on the same instruction share one
+        saved byte. Deleting one ID leaves the others in place. Deleting the last one writes the
+        original byte back and removes the entry.
       </p>
     </section>
 
     <section class="section">
-      <p class="sec-num">02 &middot; The redesign</p>
-      <h2>Restoring immediately breaks resuming through a jump</h2>
+      <h2>Why the original byte is restored later</h2>
       <p class="lead-in">
-        The first version of the breakpoint logic restored the original byte the moment a
-        breakpoint was hit, and only reinserted <code>0xCC</code> once control flow had been
-        handled. It worked for straight-line code, but a jump, call, or branch sends
-        execution somewhere that isn't just "the next byte" &mdash; so restoring early meant
-        guessing, at every place execution could resume, whether a trap byte was still owed
-        wherever it landed.
+        In my first version, I restored the original byte as soon as a breakpoint was hit and put
+        <code>0xCC</code> back after handling the next command. That works for straight-line code.
+        After a jump or call, however, the next instruction is not at the next address, so several
+        places in the code had to work out where and when to re-insert the byte. The code became hard
+        to follow, and it failed on test programs with breakpoints on jump instructions.
       </p>
 
       <figure class="figure">
         <div class="scroll">
           <svg class="dia" viewBox="0 0 720 190" role="img" aria-label="Diagram comparing two breakpoint-recovery designs. First design: restore the trap byte immediately on hit, then handle control flow, then guess where to re-arm it — breaks on jump instructions because the next address isn't predictable. Current design: mark the breakpoint hit, defer everything to the next si, cont, or syscall command, then restore, single-step exactly one instruction, and re-arm — always safe, regardless of what instruction runs.">
-            <text x="10" y="18" class="bold">First design &mdash; restore immediately, then guess where to re-arm</text>
-            <text x="10" y="32" class="t-sm muted">Works for straight-line code &mdash; breaks once the instruction is a jump</text>
+            <text x="10" y="18" class="bold">First design: restore immediately, then decide where to re-arm</text>
+            <text x="10" y="32" class="t-sm muted">Works for straight-line code, fails when the instruction is a jump</text>
 
             <rect class="box-accent" x="10" y="40" width="110" height="46" rx="4"/>
             <text x="20" y="59" class="t-sm bold">breakpoint</text>
@@ -169,7 +133,7 @@ map&lt;unsigned long, struct breakInfo&gt; breakInfoMap;</code></pre></div>
             <path class="arrow" d="M276 63 H292" marker-end="url(#d1-muted-head)"/>
             <path class="arrow-bad" d="M432 63 H448" marker-end="url(#d1-bad-head)"/>
 
-            <text x="10" y="104" class="bold">Current design &mdash; one single-step brackets the restore</text>
+            <text x="10" y="104" class="bold">Current design: restore, single-step, re-arm</text>
             <text x="10" y="118" class="t-sm muted">Same sequence every time, whatever the trapped instruction does</text>
 
             <rect class="box-accent" x="10" y="126" width="110" height="46" rx="4"/>
@@ -177,7 +141,7 @@ map&lt;unsigned long, struct breakInfo&gt; breakInfoMap;</code></pre></div>
             <text x="20" y="158" class="t-sm">hit &rarr; mark it</text>
 
             <rect class="box-plain" x="136" y="126" width="140" height="46" rx="4"/>
-            <text x="146" y="145" class="t-sm">when touch</text>
+            <text x="146" y="145" class="t-sm">wait for the</text>
             <text x="146" y="158" class="t-sm">next si/cont/syscall</text>
 
             <rect class="box-good" x="292" y="126" width="140" height="46" rx="4"/>
@@ -185,7 +149,7 @@ map&lt;unsigned long, struct breakInfo&gt; breakInfoMap;</code></pre></div>
             <text x="302" y="158" class="t-sm on-good">single step</text>
 
             <rect class="box-good" x="448" y="126" width="200" height="46" rx="4"/>
-            <text x="458" y="145" class="t-sm bold on-good">re-arm &mdash; always safe</text>
+            <text x="458" y="145" class="t-sm bold on-good">re-arm (always safe)</text>
             <text x="458" y="158" class="t-sm on-good">no guessing needed</text>
 
             <path class="arrow" d="M120 149 H136" marker-end="url(#d1-muted-head)"/>
@@ -200,71 +164,57 @@ map&lt;unsigned long, struct breakInfo&gt; breakInfoMap;</code></pre></div>
           </svg>
         </div>
         <figcaption>
-          <b>The fix:</b> tie the restore/re-arm pair to a single
-          <code>ptrace(PTRACE_SINGLESTEP)</code>, not to predicting where control flow is
-          headed. A single step's own stop is unambiguous regardless of whether the trapped
-          instruction falls through or jumps clean across the binary.
+          In the current design, a hit only sets a flag. Restoring the byte, single-stepping and
+          re-inserting <code>0xCC</code> happen together, right before the target is resumed.
         </figcaption>
       </figure>
 
       <p>
-        In the current design, hitting a breakpoint only sets a flag; the restore-step-rearm
-        sequence itself lives in exactly one function, run whenever the next
-        <code>si</code>, <code>cont</code>, or <code>syscall</code> command would resume the
-        target anyway:
+        The restore sequence is in one function, called by <code>si</code>, <code>cont</code> and
+        <code>syscall</code>. A single step always stops after exactly one instruction, whether that
+        instruction jumps or not, so the byte can be re-inserted safely.
       </p>
-      <div class="code-block"><pre><code><span class="cm">// sdb.cpp:55-86 — recovery_oneStep_restore()</span>
+      <div class="code-block"><pre><code><span class="cm">// sdb.cpp:55-86, simplified</span>
 int recovery_oneStep_restore(int child) {
     unsigned long addr = 0x0;
     for (auto breakPoints: breakInfoMap)
         if (breakPoints.second.hit)
             addr = breakPoints.first;
-    if (!addr) return 1;               <span class="cm">// nothing pending — no-op</span>
+    if (!addr) return 1;               <span class="cm">// no breakpoint to step over</span>
 
-    poke_byte(child, addr, breakInfoMap[addr].originalByte);   <span class="cm">// put it back</span>
-    ptrace(PTRACE_SINGLESTEP, child, 0, 0);                    <span class="cm">// exactly one instruction</span>
+    poke_byte(child, addr, breakInfoMap[addr].originalByte);   <span class="cm">// restore</span>
+    ptrace(PTRACE_SINGLESTEP, child, 0, 0);                    <span class="cm">// one instruction</span>
 
     if (waitpid(child, &amp;status, 0) &gt; 0 &amp;&amp; WIFSTOPPED(status))
         if (breakInfoMap[addr].active)
-            poke_byte(child, addr, INT3);                      <span class="cm">// re-arm, if still installed</span>
+            poke_byte(child, addr, INT3);                      <span class="cm">// re-insert</span>
     breakInfoMap[addr].hit = false;
 
     if (WIFEXITED(status)) { <span class="cm">/* report termination, exit */</span> }
     return 0;
 }</code></pre></div>
       <p class="code-cap">
-        <code>hit</code> and <code>active</code> answer two different questions:
-        <code>hit</code> means "a trap byte is currently missing here and owes a restore,"
-        <code>active</code> means "the user still wants a breakpoint here." A
-        <code>delete</code>d breakpoint that was already hit still needs the single-step to
-        get past it &mdash; it just doesn't get <code>0xCC</code> written back afterward.
-      </p>
-      <p>
-        The address-keyed table pays off again here: every caller of
-        <code>recovery_oneStep_restore()</code> &mdash; whether the user typed
-        <code>si</code>, <code>cont</code>, or <code>syscall</code> &mdash; runs the exact
-        same sequence, because the function doesn't need to know what instruction is under
-        the breakpoint, only that one is currently sitting with its trap byte removed.
+        <code>hit</code> means the program is stopped on this breakpoint and has to step over it
+        before resuming. <code>active</code> means the byte should be re-inserted afterwards. The
+        only inactive entry is the breakpoint sdb sets on the program's entry point (ID &minus;1) so
+        that it stops there after <code>load</code>. It is stepped over like the others, but never
+        listed or re-inserted.
       </p>
     </section>
 
     <section class="section">
-      <p class="sec-num">03 &middot; Control flow</p>
-      <h2>One dispatch loop, three ways a command can leave it</h2>
+      <h2>When to call <code>waitpid()</code></h2>
       <p class="lead-in">
-        Some commands change nothing about the target's execution state
-        (<code>break</code>, <code>patch</code>, <code>info</code>); some resume it and
-        need a fresh <code>waitpid()</code> to see what happened
-        (<code>cont</code>); and some resume it <em>and</em> already know the outcome,
-        because they had to call <code>waitpid()</code> themselves to find out
-        (<code>syscall</code>, or <code>si</code> stepping past a just-hit breakpoint). The
-        dispatch loop needs to treat those three cases differently, so every command
-        handler returns which one applies.
+        Each command is run by <code>exeSDBcommand()</code>. After a command resumes the target,
+        the main loop calls <code>waitpid()</code>, checks for a breakpoint hit, and disassembles
+        the next five instructions. Some commands have already called <code>waitpid()</code>
+        themselves, and a second call would block. So <code>exeSDBcommand()</code> returns one of
+        three values that tell the main loop what is left to do:
       </p>
 
       <figure class="figure">
         <div class="scroll">
-          <svg class="dia" viewBox="0 0 720 300" role="img" aria-label="Flowchart of the command dispatch loop. A command entered at the (sdb) prompt leads to one of three return states. Return 0 changes no execution state and loops straight back for the next command. Return 1 has resumed the target without waiting on it, so the outer loop's own waitpid runs, then breakpoint bookkeeping and disassembly, then back to the next command. Return 2 has already resumed and waited internally, so it skips straight to the same bookkeeping step, then back to the next command.">
+          <svg class="dia" viewBox="0 0 720 300" role="img" aria-label="Flowchart of the command loop. Return 0 goes straight to the next command. Return 1 goes through the main loop's waitpid(), then the breakpoint check and disassembly. Return 2 skips waitpid() and goes directly to the breakpoint check.">
             <rect class="box-plain" x="260" y="10" width="200" height="40" rx="6"/>
             <text x="360" y="34" text-anchor="middle" class="t-sm bold">(sdb) command entered</text>
 
@@ -275,7 +225,7 @@ int recovery_oneStep_restore(int child) {
             <rect class="box-plain" x="15" y="80" width="195" height="56" rx="4"/>
             <text x="112" y="102" text-anchor="middle" class="t-sm bold">return 0</text>
             <text x="112" y="118" text-anchor="middle" class="t-sm muted">info &middot; break &middot; patch</text>
-            <text x="112" y="130" text-anchor="middle" class="t-sm muted">no resume at all</text>
+            <text x="112" y="130" text-anchor="middle" class="t-sm muted">or a handled syscall stop</text>
 
             <rect class="box-accent" x="262" y="80" width="195" height="56" rx="4"/>
             <text x="360" y="102" text-anchor="middle" class="t-sm bold on-accent">return 1</text>
@@ -284,7 +234,7 @@ int recovery_oneStep_restore(int child) {
 
             <rect class="box-accent" x="510" y="80" width="195" height="56" rx="4"/>
             <text x="607" y="102" text-anchor="middle" class="t-sm bold on-accent">return 2</text>
-            <text x="607" y="118" text-anchor="middle" class="t-sm on-accent">syscall &middot; si past a bp</text>
+            <text x="607" y="118" text-anchor="middle" class="t-sm on-accent">si past a bp &middot; syscall at a bp</text>
             <text x="607" y="130" text-anchor="middle" class="t-sm on-accent">already resumed &amp; waited</text>
 
             <path class="arrow" d="M112 136 V158" marker-end="url(#d2-muted-head)"/>
@@ -311,35 +261,32 @@ int recovery_oneStep_restore(int child) {
           </svg>
         </div>
         <figcaption>
-          <b>Return 2 exists to skip a redundant wait.</b> <code>syscall</code> and a
-          breakpoint-hit <code>si</code> already call <code>waitpid()</code> themselves to
-          see what happened, so routing them through the outer loop's own
-          <code>waitpid()</code> a second time would block waiting on a state that already
-          changed.
+          Return 2 avoids a second wait. <code>syscall</code> and <code>si</code> over a hit
+          breakpoint have already called <code>waitpid()</code>, so calling it again in the main
+          loop would block even though the target has already stopped.
         </figcaption>
       </figure>
-
       <div class="scroll">
+
       <table class="datatable">
-        <thead><tr><th>Return</th><th>Meaning</th><th>Example</th></tr></thead>
+        <thead><tr><th>Return value</th><th>Meaning</th><th>Example</th></tr></thead>
         <tbody>
-          <tr><td>0</td><td class="muted-cell">Nothing resumed &mdash; loop back for another command immediately</td><td><code>info</code>, <code>break</code>, <code>patch</code></td></tr>
-          <tr><td>1</td><td class="muted-cell">Resumed, but not yet waited on &mdash; the outer loop's own <code>waitpid()</code> handles it</td><td><code>cont</code>, or <code>si</code> with no pending breakpoint</td></tr>
-          <tr><td>2</td><td class="muted-cell">Already resumed <em>and</em> waited on internally &mdash; skip straight to the per-stop bookkeeping</td><td><code>syscall</code> hitting a breakpoint, or <code>si</code> stepping past one</td></tr>
+          <tr><td>0</td><td class="muted-cell">Nothing to wait for. Read the next command.</td><td><code>info</code>, <code>break</code>, <code>patch</code>, <code>delete</code>, or <code>syscall</code> stopping at a system call</td></tr>
+          <tr><td>1</td><td class="muted-cell">Target resumed but not waited on. The main loop calls <code>waitpid()</code>.</td><td><code>cont</code>, or <code>si</code> with no breakpoint to step over</td></tr>
+          <tr><td>2</td><td class="muted-cell">Target resumed and already waited on. The main loop skips <code>waitpid()</code> and checks for a breakpoint.</td><td><code>si</code> over a hit breakpoint, or <code>syscall</code> stopping at a breakpoint</td></tr>
         </tbody>
       </table>
       </div>
+
       <p>
-        The <code>si</code> handler is where this pays off most directly: if
-        <code>recovery_oneStep_restore()</code> finds a pending breakpoint, its single step
-        <em>is</em> the instruction the user asked to execute, so <code>si</code> skips
-        issuing a second one and returns straight to the caller. If there was nothing
-        pending, it issues its own step and lets the outer loop wait on it like normal.
+        For <code>si</code>, if a breakpoint was pending, the single step inside
+        <code>recovery_oneStep_restore()</code> is already the step the user asked for, so
+        <code>si</code> returns 2 without stepping again:
       </p>
       <div class="code-block"><pre><code><span class="cm">// sdb.cpp:312-322</span>
 } else if (command_list[0] == "si") {
     if (!recovery_oneStep_restore(child))
-        return 2;                                   <span class="cm">// recovery's step already covered it</span>
+        return 2;                         <span class="cm">// already stepped and waited</span>
     ptrace(PTRACE_SINGLESTEP, child, 0, 0);
     return 1;
 } else if (command_list[0] == "cont") {
@@ -348,11 +295,22 @@ int recovery_oneStep_restore(int child) {
     return 1;
 }</code></pre></div>
       <p>
-        <code>syscall</code> goes further still: because catching an enter/leave event
-        already requires its own <code>waitpid()</code> and its own disassembly, it does
-        that work inline and returns <code>0</code> on a normal syscall stop &mdash; unless
-        the stop turns out to be a breakpoint instead of a syscall, in which case it hands
-        back <code>2</code> so the outer loop's breakpoint bookkeeping runs once, not twice.
+        <code>syscall</code> calls <code>waitpid()</code> itself to find out whether the target
+        stopped at a system call or at a breakpoint. For a system call it prints the syscall number
+        and return value and returns 0. For a breakpoint it returns 2, so the main loop reports the
+        hit.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>PIE and dynamically linked programs</h2>
+      <p>
+        sdb reads the entry point from <code>AT_ENTRY</code> in <code>/proc/[pid]/auxv</code>. For a
+        dynamically linked program this is the program's own entry point, not the dynamic linker's,
+        so a breakpoint there stops after the loader has finished. For <code>breakrva</code>, the load
+        base is the start of the first mapping in <code>/proc/[pid]/maps</code> whose name matches the
+        file that <code>/proc/[pid]/exe</code> points to. This also works when the program is started
+        through a symbolic link.
       </p>
     </section>
 
@@ -362,7 +320,7 @@ int recovery_oneStep_restore(int child) {
     <a class="nav-card" href="../index.html#sdb">
       <span class="kind">&larr; Back</span>
       <span class="what">Single Instruction Debugger</span>
-      <span class="why">The project card, with the headline architecture bullets this page doesn't repeat.</span>
+      <span class="why">Back to the project list.</span>
     </a>
     <a class="nav-card" href="https://github.com/z-jing-han/Advance-Programming-in-UNIX-system/blob/master/hw2/todo/sdb.cpp" target="_blank" rel="noopener">
       <span class="kind">Source &rarr;</span>
@@ -370,7 +328,7 @@ int recovery_oneStep_restore(int child) {
         <svg class="icon icon-inline" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         sdb.cpp
       </span>
-      <span class="why">Every line number above is a link into this file.</span>
+      <span class="why">Line numbers on this page refer to this file.</span>
     </a>
   </nav>
 

@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Two Concurrency Models, One Shell Server</title>
-<meta name="description" content="How the same shell interpreter is served two different ways: np_single_proc.cpp's single select() process, where cross-user pipes are just a map keyed by sender and receiver, and np_multi_proc.cpp's process-per-client design, where the same hand-off is rebuilt through shared memory and signals.">
+<title>Two Concurrency Models</title>
+<meta name="description" content="The same multi-user shell server built with a single select() process and with one process per client using POSIX shared memory, signals and FIFOs.">
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -42,12 +42,12 @@
   <section class="doc-hero wrap">
     <a class="backlink" href="../index.html#np-server">&larr; Projects</a>
     <p class="eyebrow">Remote Working Ground Server &middot; Architecture</p>
-    <h1>Two concurrency models, one shell server</h1>
+    <h1>One shell service, two concurrency models</h1>
     <p class="dek">
-      A multi-client shell interpreter is served two different ways: a single process
-      multiplexing every client with <code>select()</code>, and a process-per-client design
-      where independent processes coordinate through POSIX shared memory and signals instead
-      of one shared address space.
+      Projects 2 and 3 of the Network Programming course provide the same multi-user shell service
+      with two concurrency models: one process using <code>select()</code>, and one process per client. Users can
+      chat and send command output to each other through user pipes (<code>cmd &gt;N</code>,
+      <code>cmd &lt;N</code>).
     </p>
     <div class="doc-meta">
       <span>C++ &middot; Sockets &middot; POSIX IPC</span>
@@ -55,87 +55,42 @@
     </div>
   </section>
 
-  <section class="wrap">
-    <div class="tldr">
-      <p class="tldr-label">In short</p>
-      <p>
-        <code>np_single_proc.cpp</code> and <code>np_multi_proc.cpp</code> put one shell
-        interpreter behind two different server designs: a single process multiplexing every
-        client with <code>select()</code>, and a process-per-client design synchronized
-        through POSIX shared memory and signals.
-      </p>
-      <p>
-        This page covers what the project-card bullets don't have room for: how
-        <code>np_single_proc.cpp</code>'s in-process map hands one client's output to
-        another, and how <code>np_multi_proc.cpp</code> rebuilds that same hand-off once
-        every client is its own OS process.
-      </p>
-      <div class="stat-row">
-        <div class="stat">
-          <span class="stat-num">2</span>
-          <span class="stat-label">Server architectures built around one shell interpreter</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">40</span>
-          <span class="stat-label">Concurrent clients one select() process multiplexes at once</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">4</span>
-          <span class="stat-label">Shared-memory segments standing in for one process's private state</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">2</span>
-          <span class="stat-label">Signals (SIGUSR1/SIGUSR2) coordinating events across processes</span>
-        </div>
-      </div>
-    </div>
-  </section>
-
   <div class="doc-body wrap">
 
     <section class="section">
-      <p class="sec-num">01 &middot; Single Process with Select</p>
-      <h2>One process, serving every client</h2>
+      <h2>Single process with <code>select()</code></h2>
       <p class="lead-in">
-        <code>select()</code> reports which connected client socket has a line waiting. The
-        process has exactly one stdin, one stdout and one set of environment variables, so it
-        borrows them for whichever client is ready, handles one line, and gives them back
-        before asking <code>select()</code> again &mdash; no <code>fork()</code>, no second
-        process, ever.
+        <code>select()</code> reports which client sockets have input. Since there is only one
+        process, there is only one stdin, stdout, stderr and environment. For each ready client, the
+        server loads that client's environment variables, <code>dup2()</code>s the client socket onto
+        fds 0&ndash;2, runs one command line, and then restores the original fds.
       </p>
-      <div class="code-block"><pre><code><span class="cm">// np_single_proc.cpp:94-96, 106 — save stdio once, select() every cycle</span>
+      <div class="code-block"><pre><code><span class="cm">// np_single_proc.cpp:94-96, 106: save stdio once, then select() in a loop</span>
 dup2(STDIN_FILENO, 4);
 dup2(STDOUT_FILENO, 5);
 dup2(STDERR_FILENO, 6);
 <span class="cm">/* ... */</span>
 select(max_fd_history+1, &amp;rset, NULL, NULL, (struct timeval *)0);</code></pre></div>
-      <div class="code-block"><pre><code><span class="cm">// np_single_proc.cpp:202-219 — borrow stdio for one client, one line</span>
+      <div class="code-block"><pre><code><span class="cm">// np_single_proc.cpp:202-219: handle one line for one client</span>
 if (FD_ISSET(client_fd_table[i], &amp;rset)) {
     clearenv();
     for (auto env : User_Info_Map[i].EnvVar)
         setenv(env.first.c_str(), env.second.c_str(), 1);
-
-    dup2Client(client_fd_table[i]);                 <span class="cm">// borrow stdio</span>
+    dup2Client(client_fd_table[i]);                 <span class="cm">// use the client's socket as stdio</span>
     npshell_handle_one_line(User_Info_Map, i, &amp;exit, client_fd_table, firewall);
-
-    dup2(4, STDIN_FILENO);                          <span class="cm">// give it back</span>
+    dup2(4, STDIN_FILENO);                          <span class="cm">// restore the server's stdio</span>
     dup2(5, STDOUT_FILENO);
     dup2(6, STDERR_FILENO);
 }</code></pre></div>
-      <div class="note">
-        <b>The cost of this design:</b> because every client's turn runs to completion inside
-        the same one process, nothing else can happen &mdash; including servicing
-        <em>another</em> client's socket &mdash; until <code>npshell_handle_one_line()</code>
-        returns. A command that can't finish quickly stalls every other connected client, not
-        just its own.
-      </div>
-
       <p>
-        That single address space is also what makes cross-user pipes simple here: forwarding
-        Client 1's output to Client 2 is just an ordinary <code>map</code> this one process
-        already owns.
+        The downside is that a slow command blocks every other client until it finishes, because
+        everything runs in one process.
       </p>
-      <div class="code-block"><pre><code><span class="cm">// npshell.cpp:14 — one map, keyed by (sender, receiver)</span>
+      <p>
+        On the other hand, user pipes are simple here, because all the state is in one process. A pipe
+        from user 1 to user 2 is stored in a <code>map</code> keyed by (sender, receiver):
+      </p>
+      <div class="code-block"><pre><code><span class="cm">// project-2/todo/npshell.cpp:17</span>
 map&lt;pair&lt;int,int&gt;, struct pipeStruct&gt; UserPipes;</code></pre></div>
 
       <figure class="figure">
@@ -179,33 +134,30 @@ map&lt;pair&lt;int,int&gt;, struct pipeStruct&gt; UserPipes;</code></pre></div>
           </svg>
         </div>
         <figcaption>
-          <b>Keyed by who's talking to whom.</b> <code>ls &gt;2</code> inserts
-          <code>{1, 2}</code> into <code>UserPipes</code> with a fresh pipe as its value, and
-          writes into it. <code>cat &lt;1</code> looks up that same key to find the same pipe
-          and reads from it &mdash; an ordinary map lookup, not a search.
+          <code>ls &gt;2</code> from user 1 creates the entry <code>{1, 2}</code> and writes
+          to its pipe. <code>cat &lt;1</code> from user 2 looks up the same key and reads from it.
         </figcaption>
       </figure>
     </section>
 
     <section class="section">
-      <p class="sec-num">02 &middot; Multi-Process with Shared Memory</p>
-      <h2>One process per client, joined by shared memory</h2>
+      <h2>One process per client</h2>
       <p class="lead-in">
-        Going back to a process per client buys back OS-level isolation, but a forked process
-        doesn't inherit a live view of who else is connected. Everything that used to be a
-        variable in one process &mdash; the connection table, the broadcast buffer, the pipe
-        between two users &mdash; now has to live somewhere every process can reach.
+        In Project 3 the server forks a child for each connection, so clients no longer share memory.
+        Data that was an ordinary variable in the single-process version has to be in POSIX shared
+        memory:
       </p>
-      <div class="code-block"><pre><code><span class="cm">// np_multi_proc.cpp:76-105 — four segments replacing one process's private state</span>
-UserInfo_fd        = shm_open("UserInfo", O_CREAT | O_RDWR, 0666);   <span class="cm">// connection table, incl. each user's pid</span>
-MSG_fd              = shm_open("msg", O_CREAT | O_RDWR, 0666);        <span class="cm">// broadcast message buffer</span>
-UserPipeMatrix_fd   = shm_open("UserPipeMatrix", O_CREAT | O_RDWR, 0666); <span class="cm">// per-pair pipe status</span>
-Firewall_fd[i]      = shm_open(("firewall[" + to_string(i) + "]").c_str(), O_CREAT | O_RDWR, 0666);</code></pre></div>
+      <div class="code-block"><pre><code><span class="cm">// np_multi_proc.cpp:77-85</span>
+UserInfo_fd       = shm_open("UserInfo", O_CREAT | O_RDWR, 0666);        <span class="cm">// user table, incl. pids</span>
+MSG_fd            = shm_open("msg", O_CREAT | O_RDWR, 0666);             <span class="cm">// broadcast / tell buffer</span>
+UserPipeMatrix_fd = shm_open("UserPipeMatrix", O_CREAT | O_RDWR, 0666);  <span class="cm">// user-pipe state per pair</span>
+Firewall_fd[i]    = shm_open(("firewall[" + to_string(i) + "]").c_str(), O_CREAT | O_RDWR, 0666);</code></pre></div>
       <p>
-        A cross-user pipe becomes a named FIFO instead of a <code>map</code> entry, and
-        <code>SIGUSR1</code>/<code>SIGUSR2</code> signals stand in for the function calls one
-        process could have made directly &mdash; the sequence below is how a connection is
-        made and a message crosses from one client's process to another's.
+        A user pipe becomes a named FIFO, and signals replace direct function calls.
+        <code>SIGUSR1</code> tells a process to print the message in the shared buffer.
+        <code>SIGUSR2</code> tells the receiving process to open the read end of a FIFO that was just
+        created for it. This is needed because opening a FIFO for writing blocks until another process
+        opens it for reading. The steps below show one connection and one user pipe.
       </p>
 
       <div class="storyboard" id="multiProcStoryboard" tabindex="0">
@@ -236,17 +188,17 @@ Firewall_fd[i]      = shm_open(("firewall[" + to_string(i) + "]").c_str(), O_CRE
             { src: "assets/np-multi-proc/2-Connect.png", alt: "Client 1 connects to the Server over telnet.",
               cap: "Client 1 connects over <code>telnet</code>." },
             { src: "assets/np-multi-proc/3-fork.png", alt: "fork creates Server 1, running npshell, connected to Client 1.",
-              cap: "<code>accept()</code> returns a socket; <code>fork()</code> spins up <code>Server 1</code>, running <code>npshell</code> over that connection." },
+              cap: "<code>accept()</code> returns a socket, and <code>fork()</code> creates <code>Server 1</code>, which runs the shell on that connection." },
             { src: "assets/np-multi-proc/4-fork-end.png", alt: "The top-level Server keeps listening, separate from Server 1.",
               cap: "The top-level <code>Server</code> keeps listening for new connections." },
             { src: "assets/np-multi-proc/5-parent-close.png", alt: "Server 1 alone, connected to Client 1.",
-              cap: "The parent <code>Server</code> closes its own copy of the connection (<code>close(client_fd)</code>) &mdash; <code>Server 1</code> now owns it by itself." },
+              cap: "The parent <code>Server</code> closes its copy of the socket (<code>close(client_fd)</code>), so only <code>Server 1</code> holds the connection." },
             { src: "assets/np-multi-proc/6-client2.png", alt: "A second, independent Server 2 connected to Client 2.",
-              cap: "A second client repeats the same steps, in its own independent process, <code>Server 2</code>." },
+              cap: "A second client goes through the same steps and gets its own process, <code>Server 2</code>." },
             { src: "assets/np-multi-proc/7-client1-send-rq.png", alt: "Client 1 sends ls redirected to user 2.",
-              cap: "Client 1 runs <code>ls &gt;2</code> &mdash; output meant for a process <code>Server 1</code> shares no memory with." },
+              cap: "Client 1 runs <code>ls &gt;2</code>. The output is for user 2, whose process does not share memory with <code>Server 1</code>." },
             { src: "assets/np-multi-proc/8-create-tube.png", alt: "Server 1 creates a FIFO in shared memory.",
-              cap: "<code>Server 1</code> creates a FIFO and records it in shared memory &mdash; the only place the two processes can meet." },
+              cap: "<code>Server 1</code> creates a FIFO, marks it in shared memory, and sends <code>SIGUSR2</code> to <code>Server 2</code>, which opens the read end." },
             { src: "assets/np-multi-proc/9-client2-send-rq.png", alt: "Client 2 sends cat reading from user 1.",
               cap: "Client 2 runs <code>cat &lt;1</code>, asking to read what Client 1 sent." },
             { src: "assets/np-multi-proc/10-read-from-tube.png", alt: "Server 2 reads Client 1's output through the shared FIFO.",
@@ -300,7 +252,7 @@ Firewall_fd[i]      = shm_open(("firewall[" + to_string(i) + "]").c_str(), O_CRE
     <a class="nav-card" href="../index.html#np-server">
       <span class="kind">&larr; Back</span>
       <span class="what">Remote Working Ground Server</span>
-      <span class="why">The project card, with the headline architecture bullets this page doesn't repeat.</span>
+      <span class="why">Back to the project list.</span>
     </a>
     <a class="nav-card" href="https://github.com/z-jing-han/Network-Programming/blob/main/project-2/todo/np_single_proc.cpp" target="_blank" rel="noopener">
       <span class="kind">Source &rarr;</span>
@@ -308,7 +260,7 @@ Firewall_fd[i]      = shm_open(("firewall[" + to_string(i) + "]").c_str(), O_CRE
         <svg class="icon icon-inline" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         np_single_proc.cpp
       </span>
-      <span class="why">The select() design's server &mdash; every line number above is a link into this file.</span>
+      <span class="why">The <code>select()</code> server (Project 2).</span>
     </a>
     <a class="nav-card" href="https://github.com/z-jing-han/Network-Programming/blob/main/project-3/todo/np_multi_proc.cpp" target="_blank" rel="noopener">
       <span class="kind">Source &rarr;</span>
@@ -316,7 +268,7 @@ Firewall_fd[i]      = shm_open(("firewall[" + to_string(i) + "]").c_str(), O_CRE
         <svg class="icon icon-inline" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         np_multi_proc.cpp
       </span>
-      <span class="why">The shared-memory design's server &mdash; every line number above is a link into this file.</span>
+      <span class="why">The process-per-client server (Project 3).</span>
     </a>
   </nav>
 

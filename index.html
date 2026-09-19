@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Ching-Han Cheng (鄭璟翰)</title>
-<meta name="description" content="Ching-Han Cheng (鄭璟翰) — Graduate student at NYCU, working on OS internals, kernel modules, and network programming.">
+<meta name="description" content="Ching-Han Cheng (鄭璟翰). M.S. in Network Engineering from NYCU, working on OS internals, kernel modules and network programming.">
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -48,17 +48,16 @@
     <p class="eyebrow">Hi, I'm</p>
     <h1>Ching-Han Cheng <span class="hero-zh">(鄭璟翰)</span></h1>
     <p class="lede">
-      Graduate student at <strong>National Yang Ming Chiao Tung University</strong>,
-      Institute of Network Engineering. I like taking systems apart &mdash; kernel
-      internals, memory management, and low-level debugging tools &mdash; and
-      putting them back together, better.
+      I graduated with an M.S. from the Institute of Network Engineering at
+      <strong>National Yang Ming Chiao Tung University</strong> in 2026. I enjoy systems
+      programming, especially kernel internals, memory management and debugging tools.
     </p>
 
     <div class="meta-grid">
       <div class="meta-item">
         <span class="meta-label">Education</span>
-        <span class="meta-value">M.S., Network Engineering &mdash; NYCU (2024&ndash;2026)</span>
-        <span class="meta-value meta-sub">B.S., Computer Science &amp; Engineering &mdash; NSYSU, Ranked 5/66 (2020&ndash;2024)</span>
+        <span class="meta-value">M.S., Network Engineering, NYCU (2024&ndash;2026)</span>
+        <span class="meta-value meta-sub">B.S., Computer Science &amp; Engineering, NSYSU, ranked 5/66 (2020&ndash;2024)</span>
       </div>
       <div class="meta-item">
         <span class="meta-label">Thesis</span>
@@ -79,24 +78,26 @@
 
   <section id="projects" class="projects wrap">
     <h2 class="section-title">Projects</h2>
-    <p class="section-sub">A selection of systems &amp; networking projects, mostly built for coursework and self-study.</p>
+    <p class="section-sub">One self-study project and three course projects. Each card links to a short write-up with more detail.</p>
 
     <div class="project-grid">
 
-      <article class="project-card">
+      <article class="project-card" id="xv6">
         <div class="project-head">
           <h3>xv6-riscv Kernel</h3>
           <span class="project-period">Jul. 2026 &ndash; Present</span>
         </div>
-        <p class="project-sub">MIT 6.1810 Operating Systems Labs &middot; Self-study, in progress</p>
+        <p class="project-sub">MIT 6.1810 Operating Systems labs &middot; Self-study, in progress</p>
         <ul class="project-points">
-          <li>Independently completed 5 of MIT 6.1810's kernel labs (utilities, syscalls, traps, page tables, copy-on-write fork) and merged them into one regression-free kernel, resolving cross-lab conflicts in the shared page-table and memory-allocation code.
-            <a class="bullet-link" href="projects/xv6-labs-overview.html">Five labs, one kernel &rarr;</a></li>
-          <li>Designed a single reference-counted allocator that unifies 4KB pages and 2MB superpages under one lock, letting copy-on-write fork and superpage allocation share the same frame-tracking logic &mdash; plus a two-tier <code>sbrk</code> interface with eager/lazy and normal/super allocation flags.
-            <a class="bullet-link" href="projects/xv6-memory-management.html">Allocator design &rarr;</a></li>
-          <li>Root-caused a pair of masking bugs in the kernel's page-mapping routine (an off-by-one loop bound and a hardcoded page-size constant that happened to cancel each other out) using GDB register/memory inspection, then wrote a standalone diagnostic to separate a real allocator leak from a flawed test measurement.
-            <a class="bullet-link" href="projects/xv6-debugging.html">Debugging a merged kernel &rarr;</a></li>
+          <li>Merged five labs (util, syscall, pgtbl, traps, cow) into one kernel and re-ran every lab's tests after each merge to confirm that all features still work together.</li>
+          <li>Rebuilt the physical allocator so COW fork and 2MB superpages share one reference-counted structure under one lock, splitting superpages on demand and merging them back when all 512 pages are free.</li>
+          <li>Used GDB to trace a boot-time page fault to an off-by-one in my own <code>mappages()</code> change, and fixed six bugs that only appeared after merging.</li>
         </ul>
+        <p class="card-link">
+          <a href="projects/xv6-labs-overview.html">Overview &rarr;</a> &middot;
+          <a href="projects/xv6-memory-management.html">Allocator &rarr;</a> &middot;
+          <a href="projects/xv6-debugging.html">Debugging &rarr;</a>
+        </p>
         <div class="project-footer">
           <div class="tags">
             <span class="tag">C</span><span class="tag">RISC-V</span><span class="tag">GDB</span><span class="tag">QEMU</span>
@@ -110,13 +111,13 @@
           <h3>Single Instruction Debugger</h3>
           <span class="project-period">Spring 2025</span>
         </div>
-        <p class="project-sub">NYCU &mdash; Advanced Programming in the UNIX Environment</p>
+        <p class="project-sub">NYCU, Advanced Programming in the UNIX Environment</p>
         <ul class="project-points">
-          <li>Designed an address-keyed breakpoint table &mdash; supporting multiple breakpoint IDs on the same instruction &mdash; around a deferred-restore model: a hit breakpoint's original byte is written back only right before the next resume, not immediately. This replaced an earlier eager-restore design that could not reliably resume execution through jump-type instructions once a breakpoint was involved.</li>
-          <li>Built the command-dispatch loop around a three-way return protocol, letting a single outer loop distinguish commands that already consumed a <code>waitpid()</code> call from ones that still need one &mdash; keeping single-step, continue, and syscall-tracing state consistent across breakpoint hits.</li>
-          <li>Resolved the true entry point and load base of PIE and dynamically linked binaries via <code>/proc/[pid]/auxv</code> and <code>/proc/[pid]/exe</code>, so offset-based breakpoints (<code>breakrva</code>) stay correct despite ASLR.</li>
+          <li>Rewrote breakpoint handling after finding that the first design did not handle breakpoints on jump instructions: the original byte is now restored, single-stepped and re-inserted only when the target resumes.</li>
+          <li>Breakpoints are stored by address, so several IDs can share one instruction; command handlers return one of three states so the main loop never calls <code>waitpid()</code> twice.</li>
+          <li>Supports PIE and dynamically linked binaries by reading <code>AT_ENTRY</code> from <code>/proc/[pid]/auxv</code> and the load base from <code>/proc/[pid]/maps</code>.</li>
         </ul>
-        <p class="card-link"><a href="projects/sdb-breakpoint-recovery.html">Redesigning breakpoint recovery &rarr;</a></p>
+        <p class="card-link"><a href="projects/sdb-breakpoint-recovery.html">Write-up: breakpoint handling &rarr;</a></p>
         <div class="project-footer">
           <div class="tags">
             <span class="tag">C++</span><span class="tag">ptrace</span><span class="tag">Capstone</span>
@@ -130,17 +131,16 @@
           <h3>Remote Working Ground Server</h3>
           <span class="project-period">Spring 2025</span>
         </div>
-        <p class="project-sub">NYCU &mdash; Network Programming</p>
+        <p class="project-sub">NYCU, Network Programming</p>
         <ul class="project-points">
-          <li>Implemented a multi-client shell server two different ways: a single process multiplexing every client with <code>select()</code>, and a process-per-client design that coordinates shared state through POSIX shared memory and signals instead of one address space.</li>
-          <li>The <code>select()</code> design serves up to 40 clients from one process by <code>dup2</code>-ing its stdin/stdout/stderr onto whichever client socket has a line ready, then restoring them before the next cycle.</li>
-          <li>Built a second server around one process per client, keeping the connection table, broadcast buffer, and inter-user pipe status in POSIX shared memory, coordinated by <code>SIGUSR1</code>/<code>SIGUSR2</code> signals across processes.</li>
-          <li>Built the underlying shell's command-pipeline engine (ordinary and numbered pipes <code>|N</code>, redirection, and background execution), reused unmodified as the per-connection interpreter in both server designs.</li>
+          <li>Implemented one multi-user shell service with two concurrency models: a single <code>select()</code> process that swaps stdio and environment per client (up to 40 clients), and a fork-per-client server.</li>
+          <li>In the multi-process version, the user table, message buffer and user-pipe state live in POSIX shared memory; <code>SIGUSR1</code>/<code>SIGUSR2</code> notify other processes, and user pipes are named FIFOs.</li>
+          <li>The shell supports numbered pipes (<code>|N</code>, <code>!N</code>), redirection, user pipes (<code>&gt;N</code>, <code>&lt;N</code>) and chat and firewall commands.</li>
         </ul>
-        <p class="card-link"><a href="projects/np-server-architecture.html">Two concurrency models, one shell server &rarr;</a></p>
+        <p class="card-link"><a href="projects/np-server-architecture.html">Write-up: two concurrency models &rarr;</a></p>
         <div class="project-footer">
           <div class="tags">
-            <span class="tag">C++</span><span class="tag">Sockets</span><span class="tag">select()</span><span class="tag">Shared Memory</span>
+            <span class="tag">C++</span><span class="tag">Sockets</span><span class="tag">select()</span><span class="tag">POSIX IPC</span>
           </div>
           <a class="project-link" href="https://github.com/z-jing-han/Network-Programming" target="_blank" rel="noopener">GitHub &rarr;</a>
         </div>
@@ -151,16 +151,16 @@
           <h3>AES Linux Kernel Module</h3>
           <span class="project-period">Spring 2025</span>
         </div>
-        <p class="project-sub">NYCU &mdash; Advanced Programming in the UNIX Environment</p>
+        <p class="project-sub">NYCU, Advanced Programming in the UNIX Environment</p>
         <ul class="project-points">
-          <li>Designed a per-file-descriptor AES-ECB crypto device (<code>/dev/cryptodev</code>) with independent encryption state per fd, including PKCS#7 padding/unpadding with strict validation against malformed ciphertext at finalize.</li>
-          <li>Exposed live telemetry (byte counters, 256-entry byte-frequency histogram) through <code>/proc/cryptomod</code>; the shared counters are guarded by a global mutex and each fd's own buffer/state by a per-fd mutex, keeping both concurrent opens and concurrent syscalls on the same fd race-free.</li>
-          <li>Root-caused a double-free inherited from course-provided sample code by capturing SLUB debug logs (<code>slub_debug=FZUP</code>) under QEMU; it corrupted data across unrelated processes under concurrent load.</li>
+          <li>Character device <code>/dev/cryptodev</code> with per-fd state: AES-128/192/256 in ECB mode, PKCS#7 padding checked on decrypt, and byte statistics in <code>/proc/cryptomod</code>.</li>
+          <li>Found a double-free copied from the course sample code that let one process read another's data under load; confirmed it with <code>slub_debug</code> in QEMU.</li>
+          <li>Wrote a test with several threads sharing one fd, then added a per-fd mutex to fix the race it exposed.</li>
         </ul>
-        <p class="card-link"><a href="projects/aes-kernel-debugging.html">Debugging a double-free &rarr;</a></p>
+        <p class="card-link"><a href="projects/aes-kernel-debugging.html">Write-up: the double-free &rarr;</a></p>
         <div class="project-footer">
           <div class="tags">
-            <span class="tag">C</span><span class="tag">QEMU</span><span class="tag">Docker</span>
+            <span class="tag">C</span><span class="tag">Linux kernel</span><span class="tag">QEMU</span>
           </div>
           <a class="project-link" href="https://github.com/z-jing-han/Advance-Programming-in-UNIX-system/tree/master/lab2/todo" target="_blank" rel="noopener">GitHub &rarr;</a>
         </div>

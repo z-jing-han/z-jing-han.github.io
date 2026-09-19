@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Debugging a Merged xv6 Kernel</title>
-<meta name="description" content="Two bugs that took the longest to find after merging five xv6 kernel labs — a pair that masked each other in the page-mapping loop, and a leak that turned out to be a measurement error — plus the cross-lab state bugs that only a merged kernel can have.">
+<title>Debugging the Merged xv6 Kernel</title>
+<meta name="description" content="Two bugs that took the longest to find after merging five xv6 labs, and six smaller bugs caused by the merge.">
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -40,98 +40,47 @@
 <main>
 
   <section class="doc-hero wrap">
-    <a class="backlink" href="../index.html#projects">&larr; All projects</a>
+    <a class="backlink" href="../index.html#xv6">&larr; Projects</a>
     <p class="eyebrow">xv6-riscv &middot; Debugging</p>
-    <h1>Debugging a merged kernel</h1>
+    <h1>Debugging the merged kernel</h1>
     <p class="dek">
-      Rebuilding the physical memory allocator broke things. The two failures that took the
-      longest to find both turned out to sit <em>outside</em> the code I had just written &mdash;
-      one in a page-mapping loop that had been quietly wrong for years, one in how the test
-      measured free memory rather than in the memory itself.
+      After the allocator rewrite, two bugs took most of the debugging time. Neither was in the new
+      allocator. One was in my earlier superpage change to <code>mappages()</code>, and the other
+      was in how the test measured free memory. This page also lists six smaller bugs caused by the
+      merge.
     </p>
     <div class="doc-meta">
       <span>GDB &middot; QEMU</span>
-      <span>kernel/vm.c, kernel/proc.c</span>
       <span>Aug 2026</span>
-      <span>MIT 6.1810, self-study</span>
-    </div>
-  </section>
-
-  <section class="wrap">
-    <div class="tldr">
-      <p class="tldr-label">In short</p>
-      <p>
-        New code is the first place to look, and both times it was the wrong place. Ruling out the
-        new allocator cheaply &mdash; with assertions that already existed &mdash; is what made it
-        reasonable to go looking further afield, at a page-mapping off-by-one reachable only by a
-        workload that uses memory out to the physical limit, and at a leak that a purpose-built
-        diagnostic proved was never a leak at all.
-      </p>
-      <p>
-        A third group of bugs came from the merge itself: state that was correct while one lab
-        owned it, and wrong once five labs shared one <code>struct proc</code> and one allocator.
-        Those are invisible from inside any single lab.
-      </p>
-      <div class="stat-row">
-        <div class="stat">
-          <span class="stat-num">2</span>
-          <span class="stat-label">Headline bugs, both outside the new code</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">1</span>
-          <span class="stat-label">Diagnostic built to question the measurement</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">6</span>
-          <span class="stat-label">Cross-lab state bugs fixed after merging</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">3</span>
-          <span class="stat-label">Assertions that cheaply ruled out the new allocator</span>
-        </div>
-      </div>
     </div>
   </section>
 
   <div class="doc-body wrap">
 
     <section class="section">
-      <p class="sec-num">01 &middot; Bug one</p>
-      <h2>Two bugs that masked each other</h2>
-      <p class="lead-in">
-        The symptom pointed straight at the newest code. The cause was an off-by-one in
-        <code>mappages()</code> &mdash; a function the refactor never touched &mdash; and fixing it
-        exposed a second, independent bug that the first one had been hiding.
-      </p>
+      <h2>Bug 1: two bugs hiding each other</h2>
 
       <div class="anatomy">
         <div class="anatomy-row symptom">
           <div class="anatomy-key">Symptom</div>
           <div class="anatomy-val">
             <p>
-              <code>usertests -q</code> and <code>pgtbltest</code> panicked almost immediately at
-              boot with <code>kerneltrap</code>, <code>scause=0xf</code> (store page fault), and
-              <code>stval</code> landing reliably at <code>PHYSTOP - PGSIZE</code> &mdash; the very
-              top page of physical memory.
+              <code>usertests -q</code> and <code>pgtbltest</code> panicked right after boot:
+              <code>kerneltrap</code> with <code>scause=0xf</code> (store page fault) and
+              <code>stval</code> equal to <code>PHYSTOP - PGSIZE</code>, the top page of physical
+              memory.
             </p>
           </div>
         </div>
         <div class="anatomy-row">
-          <div class="anatomy-key">Ruling out</div>
+          <div class="anatomy-key">Investigation</div>
           <div class="anatomy-val">
             <p>
-              The new coalescing and reference-counting logic was the first suspect, because new
-              code usually is. The allocator's three internal assertions &mdash; a page's count
-              must be 0 before its group coalesces, plus bounds checks on the per-group free
-              counter in both directions &mdash; never fired, which ruled that out with high
-              confidence at nearly zero cost.
-            </p>
-            <p>
-              That justified going further afield, with GDB: break at the faulting
-              <code>sepc</code>, <code>info symbol</code> to resolve it to
-              <code>split_locked()</code>, <code>disassemble /s</code> to confirm the exact
-              instruction, and <code>x/4xg</code> on the faulting address to establish directly
-              that the kernel page table had <em>no mapping there at all</em>.
+              I suspected the new allocator first, but none of its assertions fired. In GDB I set a
+              breakpoint at the faulting <code>sepc</code>, used <code>info symbol</code> to see
+              that it was in <code>split_locked()</code>, checked the instruction with
+              <code>disassemble /s</code>, and used <code>x/4xg</code> to confirm that the kernel
+              page table had no mapping for that address.
             </p>
           </div>
         </div>
@@ -139,27 +88,28 @@
           <div class="anatomy-key">Root cause</div>
           <div class="anatomy-val">
             <p>
-              <code>mappages()</code> advanced the address and <em>then</em> tested whether it had
-              reached the end of the range, so the final page of any range was never mapped:
+              Three weeks earlier, when I added superpage support to <code>mappages()</code> in the
+              page-table lab, I changed the loop to advance the address before checking for the end
+              of the range. Stock xv6 checks first. As a result, the last page of every multi-page
+              4KB range was not mapped:
             </p>
             <div class="code-block"><pre><code>*pte = PA2PTE(pa) | perm | PTE_V;
 <span class="del">a += PGSIZE;
-if(a >= last) break;      <span class="cm">// last page of the range: never mapped</span></span></code></pre></div>
+if(a &gt;= last) break;      <span class="cm">// the last page is never mapped</span></span></code></pre></div>
             <p>
-              Every other call site maps a single page per call, where the dropped page is the
-              <em>only</em> page and the failure would have been obvious. The one call that maps a
-              huge, nearly system-wide range is <code>kvmmake()</code> at boot &mdash; and the page
-              it quietly dropped was exactly the top of physical memory. The allocator was right
-              that the page was free; the kernel page table had simply never mapped it since boot.
+              Single-page calls still worked, because the first page is mapped before the check.
+              However, <code>kvmmake()</code> maps all kernel RAM as one range at boot, so the top
+              page of memory was never mapped. The problem only showed up once the new allocator
+              handed that page out.
             </p>
           </div>
         </div>
         <div class="anatomy-row fix">
           <div class="anatomy-key">Fix</div>
           <div class="anatomy-val">
-            <p>Test for the end of the range <em>before</em> stepping, so the final page is mapped:</p>
+            <p>Check for the end of the range before advancing:</p>
             <div class="code-block"><pre><code>*pte = PA2PTE(pa) | perm | PTE_V;
-<span class="add">if(a >= last) break;
+<span class="add">if(a &gt;= last) break;
 a += step;
 pa += step;</span></code></pre></div>
           </div>
@@ -189,83 +139,64 @@ pa += step;</span></code></pre></div>
 
             <rect class="box-plain" x="470" y="16" width="240" height="120" rx="6"/>
             <text x="484" y="38" class="t-sm bold">Why it stayed hidden</text>
-            <text x="484" y="58" class="t-sm muted">Every other caller maps exactly one</text>
-            <text x="484" y="72" class="t-sm muted">page, where the dropped &quot;last&quot; page</text>
-            <text x="484" y="86" class="t-sm muted">is the only page &mdash; and would have</text>
-            <text x="484" y="100" class="t-sm muted">failed loudly. Only kvmmake() maps a</text>
-            <text x="484" y="114" class="t-sm muted">system-wide range at boot, dropping</text>
-            <text x="484" y="128" class="t-sm on-bad">PHYSTOP &minus; PGSIZE, unnoticed.</text>
+            <text x="484" y="58" class="t-sm muted">Single-page calls still work: the</text>
+            <text x="484" y="72" class="t-sm muted">first page is mapped before the test.</text>
+            <text x="484" y="86" class="t-sm muted">kvmmake() maps all kernel RAM as</text>
+            <text x="484" y="100" class="t-sm muted">one range at boot, silently dropping</text>
+            <text x="484" y="114" class="t-sm on-bad">PHYSTOP &minus; PGSIZE, unnoticed</text>
+            <text x="484" y="128" class="t-sm muted">until the new allocator used it.</text>
 
-            <text x="10" y="172" class="t-sm muted">Three pages, worked through by hand &mdash; the cheapest way to see an off-by-one that single-page callers never exercise.</text>
+            <text x="10" y="172" class="t-sm muted">A three-page range, worked through by hand. Single-page calls never hit this case.</text>
           </svg>
         </div>
         <figcaption>
-          <b>A three-page range is enough to see it.</b> Working the loop by hand costs a minute and
-          settles the question that reading it at speed does not.
+          Going through a three-page range by hand shows which page is missing.
         </figcaption>
       </figure>
 
-      <h3>The fix changed the symptom instead of removing it</h3>
+      <h3>The fix exposed a second bug</h3>
       <p>
-        Fixing the loop order flipped the failure into <code>panic: mappages: remap</code>. The
-        range-end calculation had hardcoded <code>PGSIZE</code> regardless of whether the call was
-        stepping by <code>PGSIZE</code> or <code>SUPERPGSIZE</code>:
+        After the fix, boot failed with <code>panic: mappages: remap</code>. The end address was
+        still computed with <code>PGSIZE</code>, even when the loop steps by 2MB:
       </p>
-      <div class="code-block"><pre><code><span class="del">last = va + size - PGSIZE;   <span class="cm">// wrong when the step is a superpage</span></span>
-<span class="add">int L = (((super == 1) && (size >= SUPERPGSIZE)) ? 1 : 0);
+      <div class="code-block"><pre><code><span class="del">last = va + size - PGSIZE;   <span class="cm">// wrong when stepping by SUPERPGSIZE</span></span>
+<span class="add">int L = (((super == 1) &amp;&amp; (size &gt;= SUPERPGSIZE)) ? 1 : 0);
 uint64 step = (L == 1) ? SUPERPGSIZE : PGSIZE;
 last = va + size - step;</span></code></pre></div>
       <p>
-        Under the old loop order these two errors cancelled out. Fixing only the first made a
-        single superpage-sized call overrun its range by one page's worth of address space
-        &mdash; straight into memory the next iteration was about to map, hence
-        <code>remap</code>.
+        With the old loop order, this mistake had no effect on superpage mappings. With the new
+        order, a superpage mapping went one step past the end of its range and hit an existing
+        mapping. After fixing both, I re-ran all of <code>pgtbltest</code> and
+        <code>usertests -q</code>, not only the test that had failed.
       </p>
-      <div class="note">
-        <b>The takeaway:</b> two bugs that mask each other are the most dangerous kind, because a
-        fix that <em>changes</em> the symptom instead of removing it looks like progress. That is
-        the signal to go looking for a second, independent cause &mdash; not to start guessing at
-        a third. It is also why this was not treated as finished until the whole of
-        <code>pgtbltest</code> and <code>usertests -q</code> ran clean again, rather than just the
-        one case that had originally failed.
-      </div>
     </section>
 
-    <section class="section">
-      <p class="sec-num">02 &middot; Bug two</p>
-      <h2>The books were right; the yardstick was wrong</h2>
-      <p class="lead-in">
-        A leak that survived every fix, by a small and suspiciously stable amount. What cracked it
-        was building a second, independent way to ask the same question.
-      </p>
+    <section class="section" id="bug-two">
+      <h2>Bug 2: a leak that was a measurement problem</h2>
 
       <div class="anatomy">
         <div class="anatomy-row symptom">
           <div class="anatomy-key">Symptom</div>
           <div class="anatomy-val">
             <p>
-              <code>usertests -q</code> consistently reported <em>"lost some free pages"</em> by a
-              small, stable count &mdash; regardless of whether coalescing was enabled, and
-              regardless of which earlier bug had already been fixed.
+              <code>usertests -q</code> reported <em>"lost some free pages"</em> by a small number
+              that stayed the same across runs, with or without coalescing enabled.
             </p>
           </div>
         </div>
         <div class="anatomy-row">
-          <div class="anatomy-key">Ruling out</div>
+          <div class="anatomy-key">Investigation</div>
           <div class="anatomy-val">
             <p>
-              Two suspects went first: the process cleanup path failing to free
-              <code>trapframe</code>/<code>usys</code>/<code>handframe</code>, and the allocator's
-              own bookkeeping. Printing those pointers in <code>allocproc()</code> and
-              <code>freeproc()</code> confirmed every <code>kfree()</code> happened as expected.
+              I first checked whether <code>freeproc()</code> freed the <code>trapframe</code>,
+              <code>usys</code> and <code>handframe</code> pages by printing them in
+              <code>allocproc()</code> and <code>freeproc()</code>. It did.
             </p>
             <p>
-              Then the turning point: a purpose-built diagnostic, <code>kfreecount()</code>, walked
-              the allocator's two freelists directly and counted them &mdash; bypassing
-              <code>sbrk()</code> and the entire syscall and page-table path that the test itself
-              uses to measure free memory. Its number was correct at every step, which meant the
-              leak was not in the allocator at all. It was somewhere between the allocator and the
-              way free memory was being <em>measured</em>.
+              Then I wrote a temporary function, <code>kfreecount()</code> (not committed), that
+              counts both free lists directly instead of measuring through <code>sbrk()</code> like
+              the test does. Its count was always correct, so the allocator was not losing pages.
+              The difference had to come from the way the test measured free memory.
             </p>
           </div>
         </div>
@@ -273,12 +204,10 @@ last = va + size - step;</span></code></pre></div>
           <div class="anatomy-key">Root cause</div>
           <div class="anatomy-val">
             <p>
-              The measurement grows a process's heap until memory runs out, then shrinks it back in
-              one call. Growing allocates data pages <em>and</em> the intermediate page-table pages
-              that <code>walk()</code> creates on demand. Shrinking only ever unmapped and freed the
-              <em>leaf</em> data pages &mdash; the now-completely-empty intermediate page-table
-              pages were never reclaimed, and stayed allocated until the process exited. That
-              grow-then-shrink pattern repeats throughout the run, so abandoned tables accumulated.
+              The test grows a process's heap until memory runs out, then shrinks it again. Growing
+              allocates data pages and also the page-table pages created by <code>walk()</code>.
+              Shrinking freed the data pages but left the now-empty page-table pages allocated until
+              the process exited. The test does this many times, so the empty tables added up.
             </p>
           </div>
         </div>
@@ -286,20 +215,18 @@ last = va + size - step;</span></code></pre></div>
           <div class="anatomy-key">Fix</div>
           <div class="anatomy-val">
             <p>
-              Extend <code>uvmunmap()</code>'s table trimming &mdash; which previously handled only
-              the last 2MB region, and only cleared PTEs without freeing the table page itself
-              &mdash; to check, for <em>every</em> 2MB region the unmap touches, whether that
-              page-table page is now entirely empty, and if so actually <code>kfree()</code> it and
-              clear the parent PTE.
+              After unmapping, <code>uvmunmap()</code> checks each 2MB region it touched and frees
+              the level-0 page-table page if it has no valid entries left. Before this change, it
+              only handled the last region and did not free the table page itself.
             </p>
-            <div class="code-block"><pre><code><span class="cm">// kernel/vm.c — uvmunmap(), after the unmap loop</span>
+            <div class="code-block"><pre><code><span class="cm">// kernel/vm.c, end of uvmunmap()</span>
 for(uint64 region = va - (va % SUPERPGSIZE); region &lt; va + npages*PGSIZE; region += SUPERPGSIZE){
   pte = walk(pagetable, region, 0, 1);
-  <span class="cm">/* skip missing, invalid, or superpage-leaf entries */</span>
+  <span class="cm">/* skip missing, invalid, or superpage entries */</span>
   pte_t *tbl = (pte_t *)PTE2PA(*pte);
   int empty = 1;
-  for(int i = 0; i &lt; PGS_PER_SUPER && empty == 1; i++)
-    if(tbl[i] & PTE_V)
+  for(int i = 0; i &lt; PGS_PER_SUPER &amp;&amp; empty == 1; i++)
+    if(tbl[i] &amp; PTE_V)
       empty = 0;
   if(empty){
     kfree((void*)tbl);
@@ -309,160 +236,105 @@ for(uint64 region = va - (va % SUPERPGSIZE); region &lt; va + npages*PGSIZE; reg
           </div>
         </div>
       </div>
-      <p>
-        The generalisable part: <strong>when a number reported through one path disagrees with
-        reality, build an independent lower-level way to ask the same question</strong> instead of
-        re-reading the same code. <code>kfreecount()</code> existed for exactly that, and it
-        separated "allocator problem" from "measurement problem" in minutes rather than hours.
-      </p>
     </section>
 
     <section class="section">
-      <p class="sec-num">03 &middot; Bug three, six times</p>
-      <h2>The bugs only a merged kernel can have</h2>
+      <h2>Six bugs caused by the merge</h2>
       <p class="lead-in">
-        A last round of failures showed up in <code>usertests</code> only under particular
-        conditions. Five of the six are the same species: state that was perfectly correct while
-        one lab owned it, and wrong once five labs share one <code>struct proc</code> and one
-        allocator.
+        These showed up in <code>usertests</code> under specific conditions and were fixed in the
+        last three commits. Most of them were correct while one lab owned the code, and broke once
+        all five labs shared <code>struct proc</code> and the allocator.
       </p>
-
       <div class="decisions">
         <div class="decision">
-          <h4>A superpage freed through the 4KB door</h4>
+          <h4>A superpage freed as a 4KB page</h4>
           <p>
-            <code>cowfault()</code> dropped its old reference with a plain <code>kfree()</code> even
-            when the PTE was a 2MB leaf. <strong>The allocator's uniform reference counting only
-            holds if callers pick the matching granularity</strong>, so the fix is a one-liner
-            (<code>super ? superfree(pa) : kfree(pa)</code>) for a class of bug that is anything
-            but: the accounting stays self-consistent while silently describing the wrong frame.
+            <code>cowfault()</code> always released the old page with <code>kfree()</code>, even
+            for a 2MB mapping. It now calls <code>superfree()</code> for superpages.
           </p>
         </div>
         <div class="decision">
-          <h4>A 32-bit shift for a 64-entry mask</h4>
+          <h4>A syscall mask that was too small</h4>
           <p>
-            The sandbox's reject mask was an <code>int</code>, tested with <code>1 &lt;&lt; num</code>.
-            Syscall numbers run past 31, which makes that shift undefined behaviour and the wrong
-            bit either way. Fixed to <code>uint64</code> with <code>1UL &lt;&lt; num</code> and an
-            explicit <code>num &gt;= 64</code> bound &mdash; <strong>the bound being the part that
-            keeps it correct when the syscall table grows again</strong>.
+            The sandbox mask was an <code>int</code> tested with <code>1 &lt;&lt; num</code>, but
+            syscall numbers go up to 35. I changed it to <code>uint64</code> with
+            <code>1UL &lt;&lt; num</code> and added a <code>num &gt;= 64</code> check.
           </p>
         </div>
         <div class="decision">
-          <h4>A copy that dropped its terminator</h4>
+          <h4>A path copied without its terminator</h4>
           <p>
-            Carrying the sandbox's allowed path across <code>fork()</code> was written as
-            <code>strncpy(dst, src, strlen(src))</code> &mdash; which copies exactly the characters
-            and <em>not</em> the trailing NUL, so the child's path ran into whatever followed it in
-            memory. Replaced with <code>safestrcpy(dst, src, sizeof(dst))</code>.
-            <strong>The first attempt at the fix was itself the bug</strong>, which is its own
-            argument for bounding by the destination's size rather than the source's length.
+            <code>fork()</code> copied the allowed path with
+            <code>strncpy(dst, src, strlen(src))</code>, which does not copy the
+            <code>'\0'</code>. That line was my own first attempt at a fix. The final version uses
+            <code>safestrcpy(dst, src, sizeof(dst))</code>.
           </p>
         </div>
         <div class="decision">
-          <h4>Timer-handler state surviving process reuse</h4>
+          <h4>Alarm state kept after process reuse</h4>
           <p>
-            The alarm lab's per-process fields (<code>ticks</code>, <code>handler</code>,
-            <code>in_handler</code>) were neither cleared by <code>kexec()</code> nor reset in
-            <code>freeproc()</code>, so a recycled <code>struct proc</code> could inherit a
-            previous process's timer handler &mdash; and the page-table lab's shared
-            <code>usys</code> page needed its pid set at allocation time for the same reason.
-            <strong>Process reuse is a lifecycle no single lab exercises hard enough to notice.</strong>
+            The alarm fields (<code>ticks</code>, <code>handler</code>, <code>in_handler</code>)
+            were not reset in <code>kexec()</code> or <code>freeproc()</code>, so a new process in
+            a reused <code>struct proc</code> could inherit the previous handler. For the same
+            reason, the pid in the <code>usyscall</code> page now has to be set when a process is
+            allocated.
           </p>
         </div>
         <div class="decision">
-          <h4>A backtrace walking away from its stack</h4>
+          <h4>A backtrace walking the wrong way</h4>
           <p>
-            The frame-pointer walk was bounded with <code>PGROUNDDOWN(fp)</code> and looped while
-            <code>fp &gt;= bound</code>. The chain climbs toward the <em>top</em> of the stack page,
-            so it has to be bounded by <code>PGROUNDUP(fp)</code> and run while
-            <code>fp &lt; bound</code>. <strong>Walking the right structure in the wrong direction
-            still terminates</strong> &mdash; it just prints garbage first, which is why it survived
-            until something else went wrong and the backtrace was needed.
+            The loop was bounded by <code>PGROUNDDOWN(fp)</code> and ran while
+            <code>fp &gt;= bound</code>. Saved frames move toward the top of the stack page, so it
+            should use <code>PGROUNDUP(fp)</code> and <code>fp &lt; bound</code>.
           </p>
         </div>
         <div class="decision">
-          <h4>One lab's deliberate exception, applied to only half the code</h4>
+          <h4>A switch applied to only one free function</h4>
           <p>
-            Freed memory is filled with junk to catch dangling references, except when the
-            <code>attack</code> exercise needs to observe stale data &mdash; a switch that was
-            honoured in <code>kfree()</code> but missing from <code>superfree()</code>.
-            <strong>Whether the exception applied depended on which granularity happened to back
-            the page</strong>, which is the kind of inconsistency that makes a test flaky rather
-            than failing.
+            <code>kfree()</code> skipped the junk fill when <code>LAB_SYSCALL</code> is defined,
+            because the <code>attack</code> test needs to see old data, but
+            <code>superfree()</code> did not. Whether <code>attack</code> could see the old data depended
+            on which page size backed the memory.
           </p>
         </div>
       </div>
-
-      <p>
-        None of these are visible from inside a single lab, and none of them are allocator bugs.
-        They are the actual cost of running five labs' features at once, and they are the reason
-        &quot;all five suites still run clean&quot; is the bar I hold the merged kernel to rather
-        than &quot;each lab passed when I wrote it&quot;.
-      </p>
     </section>
 
     <section class="section">
-      <p class="sec-num">04 &middot; Method</p>
-      <h2>What carried from bug to bug</h2>
-      <p class="lead-in">
-        Six habits that did the actual work, in rough order of how early they pay off.
-      </p>
-      <ul class="principles">
-        <li>
-          <span class="n">01</span>
-          <span><b>Read what the hardware already told you.</b> On RISC-V, <code>scause</code>,
-          <code>stval</code> and <code>sepc</code> narrow the search space before you write a
-          single line of debug code.</span>
-        </li>
-        <li>
-          <span class="n">02</span>
-          <span><b>Turn silent corruption into a locatable panic.</b> Cheap invariants caught
-          neither headline bug directly &mdash; but ruling out a whole class of suspect for a few
-          assertions is a good trade every time.</span>
-        </li>
-        <li>
-          <span class="n">03</span>
-          <span><b>When reasoning stalls, ask the running system.</b> <code>break</code>,
-          <code>info symbol</code>, <code>disassemble /s</code> and <code>x/4xg</code> settled the
-          <code>mappages()</code> bug that reading the source had not.</span>
-        </li>
-        <li>
-          <span class="n">04</span>
-          <span><b>Question the measurement, not just the system measured.</b> A purpose-built
-          <code>kfreecount()</code> existed only to tell those two possibilities apart.</span>
-        </li>
-        <li>
-          <span class="n">05</span>
-          <span><b>Bisect with a switch, not a guess.</b> Disabling coalescing and re-running
-          halved the suspect list before GDB was needed at all.</span>
-        </li>
-        <li>
-          <span class="n">06</span>
-          <span><b>Re-run everything after any fix.</b> Bug one's second, independent cause only
-          became visible <em>after</em> the first was fixed.</span>
-        </li>
-      </ul>
+      <h2>What helped most</h2>
+      <ol>
+        <li>Reading <code>scause</code>, <code>stval</code> and <code>sepc</code> first. They
+          narrowed down where to look before I added any debug code.</li>
+        <li>Keeping simple assertions in new code, so I could rule it out quickly.</li>
+        <li>Using GDB on the running kernel when reading the source did not explain the failure.</li>
+        <li>Measuring a suspicious number a second way (<code>kfreecount()</code>) instead of
+          re-reading the same code.</li>
+        <li>Turning coalescing off to cut down the list of suspects.</li>
+        <li>Re-running every test after each fix. The second <code>mappages()</code> bug only
+          appeared after the first one was fixed.</li>
+      </ol>
     </section>
 
   </div>
 
   <nav class="doc-nav">
     <a class="nav-card" href="xv6-memory-management.html">
-      <span class="kind">&larr; The design</span>
-      <span class="what">Refactoring the physical memory allocator</span>
-      <span class="why">One lock, two page granularities, and the reference counting these bugs were found on top of.</span>
+      <span class="kind">&larr; Allocator</span>
+      <span class="what">Rebuilding the physical memory allocator</span>
+      <span class="why">The design these bugs were found on.</span>
     </a>
     <a class="nav-card" href="xv6-labs-overview.html">
-      <span class="kind">Context &rarr;</span>
+      <span class="kind">&larr; Overview</span>
       <span class="what">Five labs, one kernel</span>
-      <span class="why">What each lab added, and why merging them is where these bugs came from.</span>
+      <span class="why">What each lab added and how they were merged.</span>
     </a>
-    <!-- TODO: point this at the full bug write-up (Bug List.md) once it is pushed to the repo -->
     <a class="nav-card" href="https://github.com/z-jing-han/xv6-riscv" target="_blank" rel="noopener">
       <span class="kind">Source &rarr;</span>
-      <span class="what">z-jing-han/xv6-riscv</span>
-      <span class="why">Every fix above is a commit in this repository.</span>
+      <span class="what">
+        <svg class="icon icon-inline" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        z-jing-han/xv6-riscv
+      </span>
+      <span class="why">Each fix on this page is a commit in the repository.</span>
     </a>
   </nav>
 

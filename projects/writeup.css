@@ -184,6 +184,17 @@
 
 .doc-body strong { font-weight: 600; }
 
+.doc-body .section > ul,
+.doc-body .section > ol {
+  margin: 0 0 16px;
+  padding-left: 1.3em;
+  max-width: 68ch;
+  line-height: 1.72;
+}
+
+.doc-body .section > ul li,
+.doc-body .section > ol li { margin-bottom: 6px; }
+
 .doc-body pre {
   margin: 0;
   font: inherit;

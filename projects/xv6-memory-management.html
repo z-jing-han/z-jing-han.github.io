@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Refactoring the xv6 Physical Memory Allocator</title>
-<meta name="description" content="How merging five xv6 kernel labs forced a redesign of the physical memory allocator: one structure behind one lock, two page granularities, and reference counting that copy-on-write fork and superpages can share.">
+<title>Rebuilding the xv6 Allocator</title>
+<meta name="description" content="How I rebuilt the xv6 physical memory allocator so copy-on-write fork and 2MB superpages can share one reference-counted structure.">
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -40,20 +40,17 @@
 <main>
 
   <section class="doc-hero wrap">
-    <a class="backlink" href="../index.html#projects">&larr; All projects</a>
-    <p class="eyebrow">xv6-riscv &middot; Deep dive</p>
-    <h1>Refactoring the physical memory allocator</h1>
+    <a class="backlink" href="../index.html#xv6">&larr; Projects</a>
+    <p class="eyebrow">xv6-riscv &middot; Allocator</p>
+    <h1>Rebuilding the physical memory allocator</h1>
     <p class="dek">
-      Merging five xv6 kernel labs into one kernel put two features on a collision course
-      inside a single file: superpages, from the page-table lab, and copy-on-write fork,
-      from the COW lab. Both of them want to own the life cycle of a physical frame.
-      This is the allocator I rebuilt so that they could share it.
+      After the merge, superpages (from the page-table lab) and copy-on-write fork (from the COW
+      lab) both needed to decide when a physical page is freed. This page describes the allocator I
+      wrote so that both features could use it.
     </p>
     <div class="doc-meta">
-      <span>C &middot; RISC-V (Sv39)</span>
       <span>kernel/kalloc.c, kernel/vm.c</span>
       <span>Aug 2026</span>
-      <span>MIT 6.1810, self-study</span>
     </div>
   </section>
 
@@ -61,182 +58,62 @@
     <div class="tldr">
       <p class="tldr-label">In short</p>
       <p>
-        Stock xv6 hands out one 4KB page at a time from a single global freelist, with no
-        notion of a frame being shared. Superpages need the allocator to hand out
-        2MB blocks and to take them back; copy-on-write needs every frame to carry a
-        reference count so a shared page is freed exactly once, at either granularity.
+        Stock xv6 keeps one free list of 4KB pages and has no reference counts. Superpages need the
+        allocator to hand out and take back 2MB blocks. COW needs a reference count on every page, at
+        either size. I replaced the two separate allocators with one structure protected by one lock.
+        It holds both free lists, all reference counts, and a free-page counter for each 2MB group, so
+        splitting a superpage into 512 pages and merging them back both happen inside one critical
+        section.
       </p>
-      <p>
-        I replaced the two separate allocators with <strong>one structure behind one lock</strong> that tracks
-        both page sizes and all reference counts together, so splitting a superpage into 512 pages
-        and coalescing them back are atomic operations rather than a check-then-act race.
-        Two bridging calls, <code>ksplit()</code> and <code>kaddrefcnt()</code>, let the page-table code
-        share and demote frames without the allocator's books ever going out of sync.
-      </p>
-      <div class="stat-row">
-        <div class="stat">
-          <span class="stat-num">4KB / 2MB</span>
-          <span class="stat-label">Granularities from one allocator</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">32,768</span>
-          <span class="stat-label">Frames reference-counted, at 128MB of RAM</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">1</span>
-          <span class="stat-label">Lock guarding freelists, refcounts and counters</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">512</span>
-          <span class="stat-label">Pages coalesced back into one superpage</span>
-        </div>
-      </div>
     </div>
   </section>
 
   <div class="doc-body wrap">
 
     <section class="section">
-      <p class="sec-num">01 &middot; The problem</p>
-      <h2>Two labs, one file, incompatible assumptions</h2>
+      <h2>The problem</h2>
       <p class="lead-in">
-        Each lab was developed on its own branch and passed its own test suite. The conflict
-        only appeared at merge time, because both branches had quietly taken ownership of
-        the same thing: who decides when a physical frame is free.
+        Each lab worked correctly on its own branch. The page-table lab had a separate
+        superpage pool, and the COW lab added a reference-count array to the normal allocator.
+        Keeping both allocators, each with its own lock, had two problems.
       </p>
+      <h3>Superpages were never merged back</h3>
       <p>
-        The page-table lab adds <strong>superpages</strong>: a single page-table entry maps a 2MB region
-        instead of 512 separate entries, which cuts page-table memory and TLB pressure on
-        workloads that touch a lot of memory at once &mdash; a large <code>sbrk()</code>, for example.
-        The COW lab adds <strong>copy-on-write fork</strong>: parent and child share the same physical frames,
-        read-only, until one of them writes and forces a real copy, instead of eagerly
-        duplicating the whole address space on every <code>fork()</code>.
+        When the 4KB list is empty, the allocator splits a superpage into 512 pages. Without a way
+        to merge them back, the number of superpages only goes down. After enough 4KB allocations,
+        <code>superalloc()</code> fails even though whole 2MB regions are free.
       </p>
+      <h3>Checking and splitting were not atomic</h3>
       <p>
-        Put together, every frame now needs a reference count <em>at either granularity</em>, and the
-        two granularities need to convert into each other without ever losing track of a frame
-        that is still mapped somewhere. The obvious way to get there &mdash; keep the lab's two
-        allocators side by side, each behind its own lock, and bolt a <code>refcount[]</code> array onto
-        whichever one COW happens to touch &mdash; breaks in two specific ways.
-      </p>
-
-      <h3>Failure mode 1: splitting is one-way, so the superpage pool only shrinks</h3>
-      <p>
-        When the 4KB freelist runs dry, the allocator has to break a 2MB superpage into 512
-        pages to keep serving requests. If nothing ever puts those pages back together, the
-        supply of superpages decreases monotonically over the system's lifetime. Eventually
-        <code>superalloc()</code> fails even though 2MB of contiguous memory is sitting free, just
-        in 512 pieces.
-      </p>
-
-      <figure class="figure">
-        <div class="scroll">
-          <svg class="dia" viewBox="0 0 720 200" role="img" aria-label="Diagram: splitting superpages into 4KB pages drains the superpage pool unless the pages are coalesced back">
-            <text x="10" y="16" class="bold">At boot</text>
-            <rect class="box-accent" x="10" y="28" width="46" height="34" rx="4"/>
-            <rect class="box-accent" x="60" y="28" width="46" height="34" rx="4"/>
-            <rect class="box-accent" x="110" y="28" width="46" height="34" rx="4"/>
-            <rect class="box-accent" x="160" y="28" width="46" height="34" rx="4"/>
-            <text x="10" y="80" class="t-sm muted">freelist_super: 4 &times; 2MB</text>
-            <text x="10" y="95" class="t-sm muted">freelist: empty</text>
-
-            <path class="arrow" d="M216 45 H258" marker-end="url(#mm-head)"/>
-            <text x="216" y="34" class="t-sm muted">kalloc() &times; n</text>
-
-            <text x="268" y="16" class="bold">After 4KB demand</text>
-            <rect class="box-accent" x="268" y="28" width="46" height="34" rx="4"/>
-            <g>
-              <rect class="box-plain" x="318" y="28" width="46" height="34" rx="4"/>
-              <line class="tick" x1="329" y1="28" x2="329" y2="62"/>
-              <line class="tick" x1="341" y1="28" x2="341" y2="62"/>
-              <line class="tick" x1="353" y1="28" x2="353" y2="62"/>
-              <rect class="box-plain" x="368" y="28" width="46" height="34" rx="4"/>
-              <line class="tick" x1="379" y1="28" x2="379" y2="62"/>
-              <line class="tick" x1="391" y1="28" x2="391" y2="62"/>
-              <line class="tick" x1="403" y1="28" x2="403" y2="62"/>
-              <rect class="box-plain" x="418" y="28" width="46" height="34" rx="4"/>
-              <line class="tick" x1="429" y1="28" x2="429" y2="62"/>
-              <line class="tick" x1="441" y1="28" x2="441" y2="62"/>
-              <line class="tick" x1="453" y1="28" x2="453" y2="62"/>
-            </g>
-            <text x="268" y="80" class="t-sm muted">freelist_super: 1 &times; 2MB</text>
-            <text x="268" y="95" class="t-sm muted">freelist: 1,536 &times; 4KB (3 groups)</text>
-
-            <path class="arrow-bad" d="M474 42 H506" marker-end="url(#mm-head-bad)"/>
-            <path class="arrow-good" d="M474 128 H506" marker-end="url(#mm-head-good)"/>
-            <line class="tick dashed" x1="474" y1="42" x2="474" y2="128"/>
-
-            <rect class="box-bad" x="512" y="20" width="198" height="60" rx="6"/>
-            <text x="524" y="40" class="t-sm on-bad bold">split only</text>
-            <text x="524" y="56" class="t-sm on-bad">pool never refills; superalloc()</text>
-            <text x="524" y="70" class="t-sm on-bad">fails with 2MB free, fragmented</text>
-
-            <rect class="box-good" x="512" y="102" width="198" height="60" rx="6"/>
-            <text x="524" y="122" class="t-sm on-good bold">split + coalesce</text>
-            <text x="524" y="138" class="t-sm on-good">free_in_group hits 512 &rarr; group</text>
-            <text x="524" y="152" class="t-sm on-good">goes back as one superpage</text>
-
-            <defs>
-              <marker id="mm-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
-                <path d="M0 0 L10 5 L0 10 z" class="fill-muted"/>
-              </marker>
-              <marker id="mm-head-bad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
-                <path d="M0 0 L10 5 L0 10 z" class="fill-bad"/>
-              </marker>
-              <marker id="mm-head-good" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
-                <path d="M0 0 L10 5 L0 10 z" class="fill-good"/>
-              </marker>
-            </defs>
-          </svg>
-        </div>
-        <figcaption>
-          <b>Why coalescing is not an optimisation.</b> Without it, a one-way split makes
-          superpage allocation fail permanently after any burst of 4KB demand &mdash; so the
-          page-table lab's whole feature quietly stops working once the COW lab's tests have run.
-        </figcaption>
-      </figure>
-
-      <h3>Failure mode 2: a check-then-act race across two locks</h3>
-      <p>
-        "Is the 4KB freelist empty?" and "split a superpage to refill it" are two separate
-        critical sections if the two pools live behind two locks. Two CPUs can both observe
-        <em>empty</em> at the same moment and each split a different superpage when one split
-        would have been enough &mdash; and nothing stops them from racing on which superpage
-        that is. That is a correctness hazard on a multi-core kernel, not just wasted memory.
-      </p>
-      <p>
-        Coalescing makes this worse: it needs to inspect a freelist <em>and</em> 512 reference counts
-        as one atomic fact. Split across two independently-locked structures, there is no moment
-        at which that fact is stable.
+        With two locks, checking that the 4KB list is empty and splitting a superpage are two
+        separate critical sections. Two CPUs can both see an empty list and both split a superpage.
+        Merging pages back is harder still, because it needs to look at a free list and 512
+        reference counts at the same time.
       </p>
     </section>
 
     <section class="section">
-      <p class="sec-num">02 &middot; The design</p>
-      <h2>One structure, one lock, two granularities</h2>
+      <h2>The design</h2>
       <p class="lead-in">
-        Both page sizes and every reference count live in one struct, guarded by one lock.
-        Everything that has to change together is now reachable from inside a single critical section.
+        All free lists, reference counts and group counters are in one struct, protected by one lock.
       </p>
-
       <div class="code-block"><pre><code><span class="cm">// kernel/kalloc.c</span>
 struct {
   struct spinlock lock;       <span class="cm">// protects every field below</span>
   struct run *freelist;       <span class="cm">// free 4KB pages</span>
   struct run *freelist_super; <span class="cm">// free 2MB superpages</span>
-  int refcount[NPAGE];        <span class="cm">// refcount[PGIDX(pa)] = live references to pa</span>
-  int free_in_group[NGROUP];  <span class="cm">// how many of a group's 512 sub-pages are free</span>
+  int refcount[NPAGE];        <span class="cm">// refcount[PGIDX(pa)] = references to pa</span>
+  int free_in_group[NGROUP];  <span class="cm">// free 4KB pages in each 2MB group</span>
 } kmem;</code></pre></div>
-      <p class="code-cap">
-        With <code>PHYSTOP</code> at 128MB that is <code>NPAGE</code> = 32,768 tracked frames across
-        <code>NGROUP</code> = 64 superpage-aligned groups.
+      <p>
+        With <code>PHYSTOP</code> at 128MB, that is 32,768 reference counts and 64 superpage groups.
       </p>
 
       <figure class="figure">
         <div class="scroll">
           <svg class="dia" viewBox="0 0 720 246" role="img" aria-label="Diagram: a 2MB group splits into 512 4KB pages and coalesces back when all 512 are free">
             <rect class="box-accent" x="40" y="24" width="640" height="38" rx="6"/>
-            <text x="56" y="48" class="bold on-accent">group gidx &mdash; one 2MB superpage-aligned region</text>
+            <text x="56" y="48" class="bold on-accent">group gidx: one 2MB-aligned region</text>
             <text x="524" y="48" class="t-sm on-accent">refcount[base] = 1</text>
             <text x="40" y="16" class="t-sm muted">freelist_super</text>
 
@@ -267,11 +144,11 @@ struct {
               <rect class="box" x="604" y="156" width="36" height="32" rx="3"/>
               <rect class="box" x="644" y="156" width="36" height="32" rx="3"/>
             </g>
-            <text x="40" y="150" class="t-sm muted">freelist &mdash; 512 &times; 4KB, each with its own refcount[]</text>
+            <text x="40" y="150" class="t-sm muted">freelist: 512 &times; 4KB, each with its own refcount[]</text>
             <text x="40" y="206" class="t-sm on-accent">&#9632; refcount &gt; 0 (mapped)</text>
             <text x="176" y="206" class="t-sm muted">&#9633; refcount == 0 (on the freelist, counted by free_in_group)</text>
-            <text x="40" y="224" class="t-sm muted">kfree() decrements first: a frame only rejoins a freelist once its count reaches 0 &mdash;</text>
-            <text x="40" y="238" class="t-sm muted">which is also the only moment the group's counter can reach 512.</text>
+            <text x="40" y="224" class="t-sm muted">kfree() decrements first. A page only goes back on a freelist when its count reaches 0,</text>
+            <text x="40" y="238" class="t-sm muted">and only then can the group's counter reach 512.</text>
 
             <defs>
               <marker id="g-head-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
@@ -284,121 +161,100 @@ struct {
           </svg>
         </div>
         <figcaption>
-          <b>The two transitions that have to be atomic.</b> <code>kalloc()</code> checks the 4KB freelist
-          and calls <code>split_locked()</code> inside the <em>same</em> critical section, so the
-          check-then-act race disappears by construction. <code>kfree()</code> bumps
-          <code>free_in_group[gidx]</code> and coalesces in that same section when it reaches 512.
+          <code>kalloc()</code> takes a page from the 4KB list, or calls
+          <code>split_locked()</code> if the list is empty, while holding the lock.
+          <code>kfree()</code> decrements the count. When a page is actually freed, it increments
+          <code>free_in_group</code>, and when that reaches 512, <code>coalesce_locked()</code>
+          turns the group back into one superpage.
         </figcaption>
       </figure>
 
-      <h3>Four decisions worth defending</h3>
+      <h3>Design decisions</h3>
       <div class="decisions">
         <div class="decision">
-          <h4>One lock, deliberately &mdash; for now</h4>
+          <h4>One global lock</h4>
           <p>
-            Refcount decrements, freelist membership and the coalescing counters all have to
-            change together, and coalescing touches both freelists at once. Two locks would need
-            a consistent ordering discipline at every joint site. <strong>Trading multi-core throughput
-            for a design that is obviously correct</strong> was the right call at this stage; it is
-            recorded as known debt, not overlooked.
+            Reference counts, free lists and group counters have to change together, and
+            coalescing touches both free lists. With several locks, I would need a fixed lock order
+            everywhere they meet. I chose one lock because it is easier to verify, knowing that it
+            limits multi-core performance.
           </p>
         </div>
         <div class="decision">
-          <h4>A doubly-linked freelist</h4>
+          <h4>Doubly linked free list</h4>
           <p>
-            Coalescing has to pull <em>one specific page</em> out of the 4KB freelist by address, not
-            from the head. Singly linked, finding the predecessor is an O(n) scan; adding a
-            <code>prev</code> pointer to <code>struct run</code> makes each removal <strong>O(1)</strong>, so
-            reclaiming a whole group is 512 constant-time unlinks.
+            Coalescing has to remove specific pages from the middle of the 4KB list. I added a
+            <code>prev</code> pointer to <code>struct run</code>, so each removal is O(1) instead of
+            a scan through the list.
           </p>
         </div>
         <div class="decision">
-          <h4>Exactly two sizes, not a general buddy system</h4>
+          <h4>Only two page sizes</h4>
           <p>
-            xv6 only ever needs 4KB or 2MB, so <code>split_locked()</code> and <code>coalesce_locked()</code>
-            are <strong>one-shot, non-recursive</strong> operations rather than a general order-0..9
-            split/merge tree. The generality would have been unused complexity in exchange for
-            harder-to-verify code.
+            xv6 only uses 4KB and 2MB pages, so splitting and coalescing are single steps. A general
+            buddy system with many block sizes would add code that nothing uses.
           </p>
         </div>
         <div class="decision">
-          <h4>Uniform reference counting</h4>
+          <h4>The same reference counting for both sizes</h4>
           <p>
-            <code>kalloc()</code> and <code>superalloc()</code> both set a frame's count to 1;
-            <code>kfree()</code> and <code>superfree()</code> both decrement and only push the frame back
-            onto a freelist at zero. <strong>Freeing and unsharing become the same operation</strong>,
-            which is exactly the hook COW needs &mdash; and it works identically at both sizes.
+            <code>kalloc()</code> and <code>superalloc()</code> set the count to 1.
+            <code>kfree()</code> and <code>superfree()</code> decrement it and only return the page
+            to a free list at zero. Dropping a shared reference and freeing a page become the same
+            call, which is what COW needs. <code>kfree()</code> releases the lock between the
+            decrement and the list insert so that the junk fill runs outside the lock. This is safe
+            because no other code path can reach a page whose count is 0 before it is on a list.
           </p>
         </div>
       </div>
-
       <p>
-        Cheap invariants make the structure defend itself: <code>coalesce_locked()</code> panics if any
-        page in the group still has a live reference, <code>kfree()</code> panics on refcount underflow,
-        and <code>free_in_group</code> is bounds-checked in both directions. Neither of the two bugs
-        that later took the longest to find tripped any of them &mdash; and that was exactly their
-        value: <a href="xv6-debugging.html">ruling this code out cheaply</a> is what made it
-        reasonable to go looking elsewhere.
+        The allocator also checks its own state. It panics on a reference-count underflow, if a page
+        in a group being coalesced still has references, or if <code>free_in_group</code> goes out of
+        range. None of these checks fired during the later debugging, which let me rule out the
+        allocator quickly.
       </p>
     </section>
 
     <section class="section">
-      <p class="sec-num">03 &middot; The interface</p>
-      <h2>Two bridges into the page-table code</h2>
+      <h2>Hooks for the page-table code</h2>
       <p class="lead-in">
-        A stock allocator only needs <code>kalloc()</code> and <code>kfree()</code>. Sharing and demoting
-        frames are things <code>vm.c</code> does to a frame the allocator has already handed out,
-        so each one needs an explicit hook.
+        Besides <code>kalloc()</code> and <code>kfree()</code>, <code>vm.c</code> needs two more calls
+        into the allocator.
       </p>
-
-      <div class="code-block"><pre><code><span class="cm">// Bump the reference count of an already-allocated 4KB or 2MB frame.</span>
-<span class="cm">// Call it wherever a mapping starts sharing an existing frame</span>
-<span class="cm">// instead of calling kalloc() for a fresh copy.</span>
+      <div class="code-block"><pre><code><span class="cm">// Increment the count of an allocated 4KB or 2MB page.</span>
+<span class="cm">// Called when a new mapping shares an existing page.</span>
 void kaddrefcnt(void *pa);
 
-<span class="cm">// An already-allocated superpage at pa is being demoted in place into</span>
-<span class="cm">// 512 individually-addressable 4KB pages. Call it from vm.c's</span>
-<span class="cm">// splitpage() right before the PTEs are rewritten.</span>
+<span class="cm">// A mapped superpage at pa is being split into 512 4KB pages.</span>
+<span class="cm">// Called from splitpage() in vm.c before the PTEs are rewritten.</span>
 void ksplit(void *pa);</code></pre></div>
-
       <p>
-        <code>ksplit()</code> is the interesting one, and it exists because of a real bug.
-        <code>vm.c</code>'s <code>splitpage()</code> demotes an in-use superpage by rewriting page-table
-        entries directly &mdash; it reads the PTE, clears it, and re-maps the same physical range
-        with <code>mappages(..., 0)</code> at 4KB granularity. It never calls back into the allocator at all.
+        I added <code>ksplit()</code> because of a bug. <code>splitpage()</code> turns a mapped
+        superpage into 512 4KB mappings by rewriting the PTEs directly, without calling the allocator.
+        The allocator still had a count of 0 for the other 511 pages, so the first
+        <code>kfree()</code> on any of them panicked with a reference-count underflow. Any code that
+        changes a page's size outside the allocator has to report it to the allocator.
       </p>
       <p>
-        Without <code>ksplit()</code>, <code>kalloc.c</code> has no idea those 511 new sub-pages now exist:
-        their reference counts are still sitting at their initial <code>0</code>, so the first
-        <code>kfree()</code> against any of them trips the underflow panic. The general lesson
-        generalises past this one call site: <strong>any path that reaches around the public API to
-        change a frame's representation has to be found and given an explicit hook</strong>, or the
-        allocator's books silently stop describing reality.
+        On the user side, <code>sbrk()</code> now takes two flag bits: <code>SBRK_LAZY</code>
+        (allocate on page fault instead of immediately) and <code>SBRK_SUPER</code> (use 2MB pages).
+        They can be combined freely.
       </p>
-      <div class="note">
-        <b>Also worth noting:</b> the user-visible half of this work is a <code>sbrk</code> interface with
-        two independent flag bits &mdash; <code>SBRK_LAZY</code> (allocate on fault instead of up front)
-        and <code>SBRK_SUPER</code> (back the region with 2MB superpages) &mdash; so a program can ask
-        for eager/lazy and normal/super in any combination.
-      </div>
     </section>
 
     <section class="section">
-      <p class="sec-num">04 &middot; Copy-on-write</p>
-      <h2>What reference counting buys at the fault handler</h2>
+      <h2>Copy-on-write</h2>
       <p class="lead-in">
-        With counts in place, <code>fork()</code> stops copying page contents at all, and the write-fault
-        handler gets a fast path that allocates nothing.
+        With reference counts in place, <code>fork()</code> no longer copies page contents.
       </p>
       <p>
-        <code>uvmcopy()</code> now shares the parent's frame with the child, clears the write bit, and
-        records the <em>original</em> writability in a spare PTE bit (<code>PTE_RSW</code>) so a later fault
-        can tell "this was writable, it is COW" apart from "this was always read-only":
+        <code>uvmcopy()</code> shares the parent's pages with the child. It clears
+        <code>PTE_W</code>, sets <code>PTE_RSW</code> if the page was writable, and increments the
+        reference count:
       </p>
-
-      <div class="code-block"><pre><code><span class="cm">// kernel/vm.c — uvmcopy(), on fork()</span>
-if(*pte & PTE_W)
-  *pte = (*pte & ~PTE_W) | PTE_RSW;
+      <div class="code-block"><pre><code><span class="cm">// kernel/vm.c, uvmcopy()</span>
+if(*pte &amp; PTE_W)
+  *pte = (*pte &amp; ~PTE_W) | PTE_RSW;
 *new_pte = *pte;
 kaddrefcnt((void *)PTE2PA(*pte));</code></pre></div>
 
@@ -415,7 +271,7 @@ kaddrefcnt((void *)PTE2PA(*pte));</code></pre></div>
             <rect class="box-accent" x="272" y="28" width="176" height="62" rx="6"/>
             <text x="286" y="48" class="bold on-accent">one physical frame</text>
             <text x="286" y="64" class="t-sm on-accent">refcount = 2</text>
-            <text x="286" y="78" class="t-sm muted">4KB or 2MB &mdash; same path</text>
+            <text x="286" y="78" class="t-sm muted">4KB or 2MB, same path</text>
 
             <rect class="box" x="534" y="28" width="176" height="62" rx="6"/>
             <text x="548" y="48" class="bold">child PTE</text>
@@ -436,18 +292,18 @@ kaddrefcnt((void *)PTE2PA(*pte));</code></pre></div>
             <text x="552" y="158" class="t-sm muted">refcount &gt; 1</text>
 
             <rect class="box-good" x="10" y="172" width="330" height="98" rx="6"/>
-            <text x="26" y="194" class="bold on-good">Fast path &mdash; last reference</text>
+            <text x="26" y="194" class="bold on-good">Fast path: last reference</text>
             <text x="26" y="214" class="t-sm">Restore PTE_W in place and return.</text>
             <text x="26" y="230" class="t-sm">No allocation, no memmove, no TLB-wide</text>
-            <text x="26" y="244" class="t-sm">remap &mdash; the frame is already private.</text>
+            <text x="26" y="244" class="t-sm">remap. The page is already private.</text>
             <text x="26" y="262" class="t-sm muted">This is what makes refcounts worth keeping.</text>
 
             <rect class="box" x="380" y="172" width="330" height="98" rx="6"/>
-            <text x="396" y="194" class="bold">Copy path &mdash; still shared</text>
+            <text x="396" y="194" class="bold">Copy path: still shared</text>
             <text x="396" y="214" class="t-sm">kalloc() or superalloc(), matching the</text>
             <text x="396" y="230" class="t-sm">PTE's granularity, memmove, remap, then</text>
             <text x="396" y="244" class="t-sm">kfree()/superfree() the old reference.</text>
-            <text x="396" y="262" class="t-sm muted">Freeing here just decrements &mdash; same operation.</text>
+            <text x="396" y="262" class="t-sm muted">Freeing here only decrements the count.</text>
 
             <defs>
               <marker id="c-head-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
@@ -463,57 +319,49 @@ kaddrefcnt((void *)PTE2PA(*pte));</code></pre></div>
           </svg>
         </div>
         <figcaption>
-          <b>Both branches are superpage-aware.</b> <code>uvmcopy()</code> and <code>cowfault()</code> each
-          check whether the PTE is a superpage leaf and allocate, copy and free at the matching
-          granularity, rather than assuming every COW frame is 4KB.
+          On a write fault, <code>cowfault()</code> checks <code>PTE_RSW</code>. If the
+          count is 1, the page is no longer shared, so it only sets <code>PTE_W</code> again.
+          Otherwise it allocates a new page of the same size, copies the data, remaps, and drops the
+          old reference. Both paths handle 4KB and 2MB pages.
         </figcaption>
       </figure>
     </section>
 
     <section class="section">
-      <p class="sec-num">05 &middot; Limits</p>
-      <h2>Known trade-offs, left deliberately</h2>
-      <ul class="tradeoffs">
-        <li>
-          <b>A single global <code>kmem.lock</code>.</b> Correctness over multi-core throughput at
-          this stage. The natural next step is per-CPU free lists, with the global lock reserved
-          for the shared superpage pool and cross-CPU coalescing &mdash; out of scope here, and
-          recorded rather than discovered later.
-        </li>
-        <li>
-          <b><code>uvmunmap()</code>'s trimming prunes only level-0 tables.</b> With
-          <code>PHYSTOP</code> at 128MB this is never exercised: a single process would have to span
-          more than 1GB &mdash; 512 level-0 tables &mdash; before level-1 pruning mattered. It is a
-          real gap if <code>PHYSTOP</code> or the stress workload grows. That trimming exists at all
-          because of <a href="xv6-debugging.html">a leak that turned out to be a measurement
-          error</a>.
-        </li>
-        <li>
-          <b>Coalescing is eager.</b> A group is reassembled the instant its 512th page is freed,
-          which costs 512 O(1) unlinks in the freeing path. That is the wrong trade if a workload
-          repeatedly frees and re-allocates across one group boundary; a hysteresis threshold
-          would fix it, and there is no evidence yet that it is needed.
-        </li>
+      <h2>Known limitations</h2>
+      <ul>
+        <li><strong>One global lock.</strong> The next step is per-CPU free lists, with the global
+          lock kept only for the shared superpage pool.</li>
+        <li><strong>Only level-0 page-table pages are freed on unmap.</strong> Empty level-1 tables
+          stay allocated. With 128MB of RAM, a process cannot grow large enough for this to matter,
+          but it would if <code>PHYSTOP</code> grew. (Why <code>uvmunmap()</code> frees empty tables
+          at all is explained in <a href="xv6-debugging.html#bug-two">the debugging page</a>.)</li>
+        <li><strong>Coalescing is immediate.</strong> A group is merged back as soon as its 512th page
+          is freed. A workload that repeatedly frees and allocates pages in one group would split and
+          merge it over and over.</li>
       </ul>
     </section>
 
   </div>
 
   <nav class="doc-nav">
-    <a class="nav-card" href="xv6-debugging.html">
-      <span class="kind">Next &rarr;</span>
-      <span class="what">Debugging a merged kernel</span>
-      <span class="why">What broke on top of this design &mdash; including two bugs that turned out to be nowhere near it.</span>
-    </a>
     <a class="nav-card" href="xv6-labs-overview.html">
-      <span class="kind">&larr; Context</span>
+      <span class="kind">&larr; Overview</span>
       <span class="what">Five labs, one kernel</span>
-      <span class="why">What each of the five labs added, and why merging them landed in this file.</span>
+      <span class="why">What each lab added and how they were merged.</span>
+    </a>
+    <a class="nav-card" href="xv6-debugging.html">
+      <span class="kind">Debugging &rarr;</span>
+      <span class="what">Debugging the merged kernel</span>
+      <span class="why">The bugs found after this allocator was in place.</span>
     </a>
     <a class="nav-card" href="https://github.com/z-jing-han/xv6-riscv" target="_blank" rel="noopener">
       <span class="kind">Source &rarr;</span>
-      <span class="what">z-jing-han/xv6-riscv</span>
-      <span class="why"><code>kernel/kalloc.c</code> and <code>kernel/vm.c</code> hold the code above.</span>
+      <span class="what">
+        <svg class="icon icon-inline" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        z-jing-han/xv6-riscv
+      </span>
+      <span class="why">The merged kernel with all five labs enabled.</span>
     </a>
   </nav>
 

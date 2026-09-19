@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Debugging a Double-Free in a Streaming Crypto Device</title>
-<meta name="description" content="Designing cryptomod's ADV streaming mode around AES-ECB's 16-byte blocks, tracing wrong decrypted output under concurrent load back to a double-free inherited from the course staff's sample code, and closing a second gap a dedicated shared-fd test uncovered.">
+<title>Debugging a Kernel Double-Free</title>
+<meta name="description" content="A Linux kernel module providing AES encryption through /dev/cryptodev, and a double-free copied from course sample code that mixed up data between processes.">
 <link rel="icon" href="data:,">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -41,119 +41,64 @@
 
   <section class="doc-hero wrap">
     <a class="backlink" href="../index.html#aes-kernel">&larr; Projects</a>
-    <p class="eyebrow">AES Linux Kernel Module &middot; Design &amp; Debugging</p>
-    <h1>Debugging a double-free in a streaming crypto device</h1>
+    <p class="eyebrow">AES Linux Kernel Module &middot; Debugging</p>
+    <h1>Debugging a double-free in a kernel crypto module</h1>
     <p class="dek">
-      A kernel module that streams AES-ECB encryption through <code>/dev/cryptodev</code>,
-      configured over <code>ioctl</code>. Under concurrent load it returned wrong output, traced
-      back to a single <code>kfree()</code> copied from course-provided sample code.
+      cryptomod is a Linux kernel module that provides AES-ECB encryption through
+      <code>/dev/cryptodev</code>, configured with <code>ioctl</code>. Under concurrent load,
+      processes sometimes read back another process's data. The cause was a <code>kfree()</code> I
+      had copied from the course sample code.
     </p>
     <div class="doc-meta">
-      <span>C &middot; Linux Kernel Crypto API</span>
-      <span>cryptomod.c</span>
-      <span>Spring 2025</span>
-    </div>
-  </section>
-
-  <section class="wrap">
-    <div class="tldr">
-      <p class="tldr-label">In short</p>
-      <p>
-        <code>cryptomod.c</code> implements <code>/dev/cryptodev</code>, a per-file-descriptor
-        AES-ECB crypto device configured over <code>ioctl</code>, with an <code>ADV</code> I/O
-        mode that encrypts or decrypts incrementally as bytes arrive instead of waiting to see
-        the whole payload.
-      </p>
-      <p>
-        This page covers three things the project-card bullets don't have room for: a
-        double-free that surfaced under concurrent load as wrong decrypted output, traced with
-        the kernel's slab-allocator debug checks; a second gap the same fix left open &mdash;
-        several threads sharing one fd; and, at the end, the block-withholding design behind
-        <code>ADV</code>-mode decryption.
-      </p>
-      <div class="stat-row">
-        <div class="stat">
-          <span class="stat-num">16/24/32</span>
-          <span class="stat-label">Byte key lengths supported (AES-128/192/256)</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">4096</span>
-          <span class="stat-label">Byte kernel buffer, owned per open file descriptor</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">2</span>
-          <span class="stat-label">I/O modes sharing that one buffer</span>
-        </div>
-        <div class="stat">
-          <span class="stat-num">1</span>
-          <span class="stat-label">Inherited kfree() behind the double-free</span>
-        </div>
-      </div>
+      <span>C &middot; Linux crypto API &middot; QEMU</span>
+      <span>Spring 2025 &middot; fixed Oct 2025 &middot; traced Sep 2026</span>
     </div>
   </section>
 
   <div class="doc-body wrap">
 
     <section class="section">
-      <p class="sec-num">01 &middot; Interface</p>
-      <h2>One buffer, one state machine, per file descriptor</h2>
+      <h2>The interface</h2>
       <p class="lead-in">
-        Every opened file descriptor carries its own encryption state, so the module reaches
-        for the same buffer on every <code>write()</code>, <code>read()</code> and
-        <code>ioctl()</code> against that fd, and never touches another fd's.
+        The device interface is defined by the lab spec. Each <code>open()</code> allocates a
+        <code>struct cryptomod_data</code> and a 4096-byte buffer and stores them in
+        <code>file-&gt;private_data</code>. <code>close()</code> frees both
+        (<code>cryptomod.c:50&ndash;82</code>).
       </p>
-      <p>
-        <code>cryptomod_dev_open()</code> <code>kmalloc</code>s a small
-        <code>struct cryptomod_data</code> plus a 4096-byte <code>kernel_buffer</code>, and hands
-        both off through <code>file-&gt;private_data</code>; <code>cryptomod_dev_close()</code>
-        frees them back in reverse (<code>cryptomod.c:50&ndash;82</code>). That allocate-once,
-        free-once pairing is exactly the ownership contract the bug in
-        <a href="#debugging">section 02</a> ends up breaking &mdash; and the reason
-        <code>fd_lock</code> in <a href="#hardening">section 03</a> is initialized and destroyed
-        right alongside it.
-      </p>
-      <div class="code-block"><pre><code><span class="cm">// cryptomod.c</span>
+      <div class="code-block"><pre><code><span class="cm">// cryptomod.c:30-38</span>
 struct cryptomod_data {
     pid_t pid;
-    char* kernel_buffer;              <span class="cm">// owned by open()/close(), nothing else</span>
+    char* kernel_buffer;              <span class="cm">// allocated in open(), freed in close()</span>
     size_t cur_kernel_buffer_pos;
     struct CryptoSetup crypto_config; <span class="cm">// key, key_len, io_mode, c_mode</span>
     int device_setup;
     int finalize;
-    struct mutex fd_lock;             <span class="cm">// serializes read()/write()/ioctl() on this fd</span>
+    struct mutex fd_lock;             <span class="cm">// added later, see below</span>
 };</code></pre></div>
-      <p>
-        The four <code>ioctl</code> commands are the state machine's only transitions:
-      </p>
-      <ul class="feature-list">
-        <li><span class="fname">CM_IOC_SETUP</span><span>Validates key length (16, 24, or 32 bytes &mdash; AES-128/192/256) and mode, resets the buffer position, zeroes the buffer.</span></li>
-        <li><span class="fname">CM_IOC_FINALIZE</span><span>Applies or validates PKCS#7 padding &mdash; the only place padding is decided.</span></li>
-        <li><span class="fname">CM_IOC_CLEANUP</span><span>Resets position and buffer contents, clears the finalize flag, keeps the fd open.</span></li>
-        <li><span class="fname">CM_IOC_CNT_RST</span><span>Resets the global byte counters and frequency table, under <code>global_lock</code>.</span></li>
+      <ul>
+        <li><code>CM_IOC_SETUP</code> checks the key length (16, 24 or 32 bytes) and the modes, and
+          clears the buffer.</li>
+        <li><code>CM_IOC_FINALIZE</code> adds PKCS#7 padding when encrypting, or checks and removes it
+          when decrypting.</li>
+        <li><code>CM_IOC_CLEANUP</code> clears the buffer and the finalize flag.</li>
+        <li><code>CM_IOC_CNT_RST</code> resets the global byte counters and byte-frequency table shown
+          in <code>/proc/cryptomod</code>.</li>
       </ul>
     </section>
 
     <section class="section" id="debugging">
-      <p class="sec-num">02 &middot; Debugging</p>
-      <h2>Wrong output under load, traced to a double-free</h2>
-      <p class="lead-in">
-        Under concurrent load, decrypted output sometimes came back wrong, and adding
-        <code>printk()</code> calls made the problem disappear &mdash; which looks like a
-        timing-sensitive race, but the cause was a memory-ownership bug.
-      </p>
+      <h2>The double-free</h2>
 
       <div class="anatomy">
         <div class="anatomy-row symptom">
           <div class="anatomy-key">Symptom</div>
           <div class="anatomy-val">
             <p>
-              With multiple threads running, the encrypted or decrypted results a user program
-              received from the device were wrong; single-threaded runs were always correct.
-              Adding a <code>printk()</code> at the top of <code>read()</code>,
-              <code>write()</code>, and <code>ioctl()</code> made the multi-threaded results
-              correct again. Separately, roughly 1 run in 20, under any configuration, printed a
-              panic-like kernel warning that didn't stop the system, and its reported location
-              had no obvious connection to the AES module.
+              With several threads or processes, the encrypted or decrypted output was sometimes
+              wrong. Single-threaded runs were always correct. Adding <code>printk()</code> at the
+              start of <code>read()</code>, <code>write()</code> and <code>ioctl()</code> made the
+              problem go away. About one run in twenty also printed a kernel warning that pointed to
+              code unrelated to the module.
             </p>
           </div>
         </div>
@@ -161,21 +106,15 @@ struct cryptomod_data {
           <div class="anatomy-key">Investigation</div>
           <div class="anatomy-val">
             <p>
-              To make the problem observable, <code>multi_test.c</code> &mdash; a reproduction
-              test written for this bug &mdash; forks several processes that each open
-              <code>/dev/cryptodev</code> independently and use their own PID as the plaintext,
-              so every process's data is distinguishable. Its output showed that roughly half the
-              time, a process's kernel buffer held another PID's plaintext or ciphertext instead
-              of its own &mdash; pointing to memory being reused across allocations that should
-              have been independent.
+              I wrote <code>multi_test.c</code>, which forks several processes that each open
+              <code>/dev/cryptodev</code> and use their own PID as the plaintext, so it is clear whose
+              data ends up where. In about half of the runs, a process read back another PID's data.
             </p>
             <p>
-              To inspect the memory state directly, QEMU was booted with SLUB debugging enabled
-              (<code>slub_debug=FZUP</code>) and a run was captured in
-              <code>double-kfree.log</code>. The log contains <code>Slab has 0 allocated objects
-              but 1 are to be freed</code>, which indicates a double free. Searching the log for
-              <code>multi_test</code> and following the panic call stack below it shows the
-              failure occurring in <code>test_skcipher()</code>.
+              I then booted QEMU with <code>slub_debug=FZUP</code> and saved the output in
+              <code>double-kfree.log</code>. It reports <code>Slab has 0 allocated objects but 1 are
+              to be freed</code>, which is a double free, and the call stack for
+              <code>multi_test</code> goes through <code>test_skcipher()</code>.
             </p>
           </div>
         </div>
@@ -183,52 +122,36 @@ struct cryptomod_data {
           <div class="anatomy-key">Root cause</div>
           <div class="anatomy-val">
             <p>
-              The course staff's given <code>sample_code.c</code> allocates its own scratch
-              buffer inside <code>test_skcipher()</code> and frees it on the way out &mdash;
-              correct, because the function owns that allocation:
+              The course's <code>sample_code.c</code> allocates a buffer in
+              <code>test_skcipher()</code> and frees it at the end, which is correct there:
             </p>
-            <div class="code-block"><pre><code><span class="cm">// sample_code.c:45,78 — course-provided reference code</span>
-data = kmalloc(datasize, GFP_KERNEL);  <span class="cm">// local to this function</span>
-<span class="cm">/* ...encrypt in place... */</span>
+            <div class="code-block"><pre><code><span class="cm">// sample_code.c:45,78 (course sample code)</span>
+data = kmalloc(datasize, GFP_KERNEL);
+<span class="cm">/* ... encrypt in place ... */</span>
 out:
     crypto_free_skcipher(tfm);
     skcipher_request_free(req);
-    kfree(data);                       <span class="cm">// correct: frees what it just allocated</span></code></pre></div>
+    kfree(data);</code></pre></div>
             <p>
-              Adapting it into <code>cryptomod.c</code> meant swapping that local buffer for the
-              fd's persistent one &mdash; <code>data = private_data-&gt;kernel_buffer</code>
-              (<code>cryptomod.c:88</code>), the same buffer <code>open()</code> allocates once
-              and <code>close()</code> frees once. The given code's trailing <code>kfree()</code>
-              came along for the ride:
+              In <code>cryptomod.c</code> I changed <code>data</code> to point to the fd's buffer,
+              which <code>open()</code> allocates and <code>close()</code> frees, but I kept the
+              <code>kfree()</code>:
             </p>
-            <div class="code-block"><pre><code><span class="cm">// cryptomod.c — test_skcipher(), as first adapted</span>
-u8* data = private_data->kernel_buffer;  <span class="cm">// now points at the fd's persistent buffer</span>
-<span class="cm">/* ...encrypt or decrypt in place... */</span>
+            <div class="code-block"><pre><code><span class="cm">// cryptomod.c, test_skcipher(), first version</span>
+u8* data = private_data-&gt;kernel_buffer;
+<span class="cm">/* ... encrypt or decrypt in place ... */</span>
 out:
     crypto_free_skcipher(tfm);
     skcipher_request_free(req);
-<span class="del">    kfree(data);                         <span class="cm">// frees a buffer this function does not own</span></span></code></pre></div>
+    kfree(data);                  <span class="cm">// frees the fd's buffer while it is still in use</span></code></pre></div>
             <p>
-              <code>test_skcipher()</code> runs on nearly every <code>read()</code> in
-              <code>ADV</code> mode (<code>cryptomod.c:201</code>). Freeing
-              <code>kernel_buffer</code> there hands that memory back to the slab allocator's
-              free list, and the very next unrelated <code>kmalloc()</code> anywhere in the
-              kernel, including <em>another process's</em> <code>cryptomod_dev_open()</code>, is
-              free to reuse that exact block. Once two file descriptors'
-              <code>private_data-&gt;kernel_buffer</code> point at the same memory, each
-              process's <code>read()</code>/<code>write()</code> overwrites what the other is
-              still using, which shows up as one process's output containing another's bytes.
-              Most of the time the memory is simply reused; only occasionally does the
-              allocator's debug check notice the double free and print the panic-like warning
-              seen in the symptom.
-            </p>
-            <p>
-              That also accounts for the <code>printk()</code> observation.
-              <code>printk()</code> is comparatively slow and serializes through the console
-              lock, which shifts allocator timing enough that a process's next allocation
-              usually didn't land on the block it had just mistakenly freed before that process
-              touched it again &mdash; so the wrong output stopped appearing even though the bug
-              was still there.
+              <code>test_skcipher()</code> runs on almost every <code>read()</code>
+              (<code>cryptomod.c:201</code>), so the buffer was returned to the slab allocator while
+              the fd was still using it. The next <code>kmalloc()</code> of the same size, for example
+              another process's <code>open()</code>, could get the same memory, and then two fds
+              shared one buffer. <code>close()</code> later freed it a second time. The
+              <code>printk()</code> calls changed the timing so that the memory was reused less often,
+              which is why they hid the bug.
             </p>
           </div>
         </div>
@@ -236,9 +159,10 @@ out:
           <div class="anatomy-key">Fix</div>
           <div class="anatomy-val">
             <p>
-              Take out the inherited <code>kfree()</code> (<code>cryptomod.c:131&ndash;136</code>).
-              Removing that one call turned out to be the easy part; auditing a different
-              sharing pattern it didn't cover is <a href="#hardening">section 03</a>.
+              Remove the <code>kfree()</code> (<code>cryptomod.c:131&ndash;136</code>). That part was
+              easy, but it raised another question: <code>multi_test.c</code> only covers processes
+              with their own fd, so what happens when several threads share one fd? That is the
+              <a href="#hardening">next section</a>.
             </p>
           </div>
         </div>
@@ -246,87 +170,39 @@ out:
     </section>
 
     <section class="section" id="hardening">
-      <p class="sec-num">03 &middot; Hardening</p>
-      <h2>A different sharing pattern the first fix didn't cover</h2>
+      <h2>Several threads on one fd</h2>
       <p class="lead-in">
-        <code>multi_test.c</code>'s processes each open their own fd, so every
-        <code>kernel_buffer</code> is private to one file descriptor &mdash; fixing the
-        double-free closes that path completely for it. That leaves a different pattern: one fd
-        <em>shared</em> by several threads. Nothing in the module serialized
-        <code>read()</code>/<code>write()</code>/<code>ioctl()</code> calls landing on the same
-        open file descriptor at once.
+        Nothing stopped two threads' <code>write()</code> calls on the same fd from reading the
+        same <code>cur_kernel_buffer_pos</code> and copying their data to the same place:
       </p>
+      <div class="code-block"><pre><code><span class="cm">// cryptomod.c, write() before fd_lock</span>
+copy_from_user(data-&gt;kernel_buffer + data-&gt;cur_kernel_buffer_pos, buf, process_bytes);
+data-&gt;cur_kernel_buffer_pos += process_bytes;  <span class="cm">// not atomic</span></code></pre></div>
       <p>
-        <code>share_fd_test.c</code> opens <code>/dev/cryptodev</code> once, then spawns several
-        threads that all call <code>write()</code> on that single shared fd at once, each writing
-        one 16-byte block tagged with its own signature byte. <code>CM_IOC_SETUP</code> runs once,
-        single-threaded, before any thread starts, so the test isolates exactly one thing: the
-        internal race in <code>cryptomod_dev_write()</code> on <code>cur_kernel_buffer_pos</code>.
-        After <code>CM_IOC_FINALIZE</code> and a decrypt round-trip, it checks that no 16-byte
-        window mixes two threads' bytes and that every thread's signature shows up exactly once.
-      </p>
-
-      <div class="code-block"><pre><code><span class="cm">// cryptomod.c — write(), before fd_lock existed</span>
-size_t process_bytes = min(len, MAX_BUFFER_SIZE - data->cur_kernel_buffer_pos);
-copy_from_user(data->kernel_buffer + data->cur_kernel_buffer_pos, buf, process_bytes);
-data->cur_kernel_buffer_pos += process_bytes;  <span class="cm">// read-modify-write, no lock</span></code></pre></div>
-      <p class="code-cap">
-        Two threads landing between the read and the write of <code>cur_kernel_buffer_pos</code>
-        can compute the same destination offset, so one thread's <code>copy_from_user()</code>
-        silently overwrites bytes the other just placed &mdash; exactly the torn or missing
-        chunks <code>share_fd_test.c</code> checks for.
-      </p>
-
-      <div class="code-block"><pre><code><span class="cm">// cryptomod.c:143-172 — write(), now single-entry / single-exit under fd_lock</span>
-    mutex_lock(&data->fd_lock);
-    <span class="cm">/* ...validate, copy_from_user, advance cur_kernel_buffer_pos... */</span>
-    mutex_unlock(&data->fd_lock);
-    return process_bytes;
-
-write_err:
-    mutex_unlock(&data->fd_lock);
-    return err;</code></pre></div>
-      <p class="code-cap">
-        <code>read()</code> (<code>cryptomod.c:175&ndash;227</code>) and
-        <code>ioctl()</code> (<code>cryptomod.c:230&ndash;346</code>) follow the same shape: take
-        <code>fd_lock</code> on entry and release it on every path out, with error paths
-        funneling through one labeled exit. <code>fd_lock</code> itself lives in
-        <code>struct cryptomod_data</code> (<code>cryptomod.c:37</code>), initialized in
-        <code>open()</code> and destroyed in <code>close()</code>
-        (<code>cryptomod.c:65, 77</code>) &mdash; the same lifecycle as the buffer it now guards.
+        I wrote <code>share_fd_test.c</code>, in which several threads write ID-tagged 16-byte
+        blocks to one fd and then check that each block comes back once and unmixed. To fix the
+        race, I added a per-fd mutex, <code>fd_lock</code>, that <code>read()</code>,
+        <code>write()</code> and <code>ioctl()</code> hold for their whole duration
+        (<code>cryptomod.c:143&ndash;346</code>). The global counters in
+        <code>/proc/cryptomod</code> use a separate global mutex.
       </p>
     </section>
 
     <section class="section">
-      <p class="sec-num">04 &middot; The design</p>
-      <h2>Why ADV mode always keeps one block back</h2>
+      <h2>Why ADV decryption keeps one block</h2>
       <p class="lead-in">
-        PKCS#7 padding is only decided when the caller signals end-of-stream with
-        <code>CM_IOC_FINALIZE</code>. Handing back the last available block before that point
-        risks handing back padding &mdash; and <code>read()</code> can't take bytes back once
-        they've crossed into user space.
+        PKCS#7 padding is only known at <code>CM_IOC_FINALIZE</code>. In ADV decrypt mode,
+        <code>read()</code> returns complete blocks as soon as they are available. The last block may
+        contain padding, and bytes already returned to user space cannot be taken back. So before
+        <code>FINALIZE</code>, <code>read()</code> always leaves at least one block in the buffer:
       </p>
-      <p>
-        In <code>ADV</code> mode, every <code>read()</code> decrypts and returns whatever full
-        blocks are sitting in the buffer immediately &mdash; that's the whole point of streaming
-        instead of buffering the entire payload like <code>BASIC</code> mode does. It's safe for
-        every block except the last one, and nothing in a single <code>read()</code> call can
-        tell whether the block it's about to hand back <em>is</em> the last one.
-      </p>
-
-      <div class="code-block"><pre><code><span class="cm">// cryptomod.c:186-190 — keep at least a block in dev for padding</span>
+      <div class="code-block"><pre><code><span class="cm">// cryptomod.c:186-190</span>
 size_t process_bytes = min(len - len % CM_BLOCK_SIZE,
-    data->cur_kernel_buffer_pos - data->cur_kernel_buffer_pos % CM_BLOCK_SIZE);
-if (data->crypto_config.io_mode == ADV && data->crypto_config.c_mode == DEC &&
-    !data->finalize && data->cur_kernel_buffer_pos - process_bytes < CM_BLOCK_SIZE) {
+    data-&gt;cur_kernel_buffer_pos - data-&gt;cur_kernel_buffer_pos % CM_BLOCK_SIZE);
+if (data-&gt;crypto_config.io_mode == ADV &amp;&amp; data-&gt;crypto_config.c_mode == DEC &amp;&amp;
+    !data-&gt;finalize &amp;&amp; data-&gt;cur_kernel_buffer_pos - process_bytes &lt; CM_BLOCK_SIZE) {
     process_bytes -= CM_BLOCK_SIZE;
 }</code></pre></div>
-      <p class="code-cap">
-        <code>process_bytes</code> first rounds down to whole blocks, then &mdash; only for
-        <code>ADV</code>+<code>DEC</code>, only before <code>finalize</code> &mdash; gives one
-        block back if that would otherwise empty the buffer. The result: exactly one block is
-        always left waiting when <code>CM_IOC_FINALIZE</code> arrives.
-      </p>
 
       <figure class="figure">
         <div class="scroll">
@@ -348,7 +224,7 @@ if (data->crypto_config.io_mode == ADV && data->crypto_config.c_mode == DEC &&
             <text x="454" y="60" class="t-sm bold">Why hold it back</text>
             <text x="454" y="78" class="t-sm muted">Padding is only added by the sender at</text>
             <text x="454" y="92" class="t-sm muted">FINALIZE, so any block returned early</text>
-            <text x="454" y="106" class="t-sm muted">could turn out to have been padding &mdash;</text>
+            <text x="454" y="106" class="t-sm muted">could turn out to be padding,</text>
             <text x="454" y="120" class="t-sm on-bad">and read() can't take bytes back.</text>
 
             <path class="arrow-accent" d="M355 86 V148" marker-end="url(#adv-head)"/>
@@ -366,9 +242,8 @@ if (data->crypto_config.io_mode == ADV && data->crypto_config.c_mode == DEC &&
           </svg>
         </div>
         <figcaption>
-          <b>The only asymmetry in the design.</b> Encryption never needs this &mdash; padding is
-          appended, not discovered, at <code>FINALIZE</code>. Decryption is the direction where a
-          block released too early can't be un-sent.
+          Encryption does not need this, because padding is added at <code>FINALIZE</code>
+          instead of being found in the data.
         </figcaption>
       </figure>
     </section>
@@ -379,7 +254,7 @@ if (data->crypto_config.io_mode == ADV && data->crypto_config.c_mode == DEC &&
     <a class="nav-card" href="../index.html#aes-kernel">
       <span class="kind">&larr; Back</span>
       <span class="what">AES Linux Kernel Module</span>
-      <span class="why">The project card, with the headline architecture bullets this page doesn't repeat.</span>
+      <span class="why">Back to the project list.</span>
     </a>
     <a class="nav-card" href="https://github.com/z-jing-han/Advance-Programming-in-UNIX-system/blob/master/lab2/todo/cryptomod/cryptomod.c" target="_blank" rel="noopener">
       <span class="kind">Source &rarr;</span>
@@ -387,7 +262,7 @@ if (data->crypto_config.io_mode == ADV && data->crypto_config.c_mode == DEC &&
         <svg class="icon icon-inline" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         cryptomod.c
       </span>
-      <span class="why">The file every line reference on this page points into.</span>
+      <span class="why">Line numbers on this page refer to this file.</span>
     </a>
   </nav>
 
