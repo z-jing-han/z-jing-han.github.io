@@ -105,7 +105,7 @@
         </div>
       </article>
 
-      <article class="project-card">
+      <article class="project-card" id="sdb">
         <div class="project-head">
           <h3>Single Instruction Debugger</h3>
           <span class="project-period">Spring 2025</span>
@@ -125,7 +125,7 @@
         </div>
       </article>
 
-      <article class="project-card">
+      <article class="project-card" id="np-server">
         <div class="project-head">
           <h3>Remote Working Ground Server</h3>
           <span class="project-period">Spring 2025</span>
@@ -146,17 +146,16 @@
         </div>
       </article>
 
-      <article class="project-card">
+      <article class="project-card" id="aes-kernel">
         <div class="project-head">
           <h3>AES Linux Kernel Module</h3>
           <span class="project-period">Spring 2025</span>
         </div>
         <p class="project-sub">NYCU &mdash; Advanced Programming in the UNIX Environment</p>
         <ul class="project-points">
-          <li>Designed a per-file-descriptor AES-ECB crypto device (<code>/dev/cryptodev</code>), with each opened fd maintaining independent encryption state via <code>file->private_data</code>.</li>
-          <li>Exposed live telemetry (byte counters, 256-entry byte-frequency histogram) through <code>/proc/cryptomod</code>, synchronized with a global mutex to remain race-free under concurrent access &mdash; including PKCS#7 padding/unpadding with strict validation against malformed ciphertext.</li>
-          <li>Debugged and resolved a kernel panic caused by a buffer-size/<code>kmalloc</code>-<code>kfree</code> mismatch under concurrent multi-threaded stress testing.</li>
-          <li>Integrated the kernel's asynchronous Crypto API (<code>crypto_skcipher</code>, scatterlists) for AES-ECB operations, and designed a streaming <code>ADV</code> I/O mode that withholds the final ciphertext block during decryption until finalize.</li>
+          <li>Designed a per-file-descriptor AES-ECB crypto device (<code>/dev/cryptodev</code>) with independent encryption state per fd, including PKCS#7 padding/unpadding with strict validation against malformed ciphertext at finalize.</li>
+          <li>Exposed live telemetry (byte counters, 256-entry byte-frequency histogram) through <code>/proc/cryptomod</code>; the shared counters are guarded by a global mutex and each fd's own buffer/state by a per-fd mutex, keeping both concurrent opens and concurrent syscalls on the same fd race-free.</li>
+          <li>Root-caused a double-free inherited from course-provided sample code by capturing SLUB debug logs (<code>slub_debug=FZUP</code>) under QEMU; it corrupted data across unrelated processes under concurrent load.</li>
         </ul>
         <p class="card-link"><a href="projects/aes-kernel-debugging.html">Debugging a double-free &rarr;</a></p>
         <div class="project-footer">
