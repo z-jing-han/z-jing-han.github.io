@@ -91,7 +91,7 @@
         <ul class="project-points">
           <li>Merged five labs (util, syscall, pgtbl, traps, cow) into one kernel and re-ran every lab's tests after each merge to confirm that all features still work together.</li>
           <li>Rebuilt the physical allocator so COW fork and 2MB superpages share one reference-counted structure under one lock, splitting superpages on demand and merging them back when all 512 pages are free.</li>
-          <li>Used GDB to trace a boot-time page fault to an off-by-one in my own <code>mappages()</code> change, and fixed six bugs that only appeared after merging.</li>
+          <li>Used GDB to trace a boot-time page fault to an off-by-one in my own <code>mappages()</code> change, and fixed six bugs found after the merge.</li>
         </ul>
         <p class="card-link">
           <a href="projects/xv6-labs-overview.html">Overview &rarr;</a> &middot;
@@ -133,7 +133,7 @@
         </div>
         <p class="project-sub">NYCU, Network Programming</p>
         <ul class="project-points">
-          <li>Implemented one multi-user shell service with two concurrency models: a single <code>select()</code> process that swaps stdio and environment per client (up to 40 clients), and a fork-per-client server.</li>
+          <li>Implemented one multi-user shell service with two concurrency models: a single <code>select()</code> process that swaps stdio and environment per client, and a fork-per-client server.</li>
           <li>In the multi-process version, the user table, message buffer and user-pipe state live in POSIX shared memory; <code>SIGUSR1</code>/<code>SIGUSR2</code> notify other processes, and user pipes are named FIFOs.</li>
           <li>The shell supports numbered pipes (<code>|N</code>, <code>!N</code>), redirection, user pipes (<code>&gt;N</code>, <code>&lt;N</code>) and chat and firewall commands.</li>
         </ul>

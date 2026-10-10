@@ -197,12 +197,12 @@ Firewall_fd[i]    = shm_open(("firewall[" + to_string(i) + "]").c_str(), O_CREAT
               cap: "A second client goes through the same steps and gets its own process, <code>Server 2</code>." },
             { src: "assets/np-multi-proc/7-client1-send-rq.png", alt: "Client 1 sends ls redirected to user 2.",
               cap: "Client 1 runs <code>ls &gt;2</code>. The output is for user 2, whose process does not share memory with <code>Server 1</code>." },
-            { src: "assets/np-multi-proc/8-create-tube.png", alt: "Server 1 creates a FIFO in shared memory.",
+            { src: "assets/np-multi-proc/8-create-tube.png", alt: "Server 1 creates a FIFO and marks it in shared memory.",
               cap: "<code>Server 1</code> creates a FIFO, marks it in shared memory, and sends <code>SIGUSR2</code> to <code>Server 2</code>, which opens the read end." },
             { src: "assets/np-multi-proc/9-client2-send-rq.png", alt: "Client 2 sends cat reading from user 1.",
               cap: "Client 2 runs <code>cat &lt;1</code>, asking to read what Client 1 sent." },
             { src: "assets/np-multi-proc/10-read-from-tube.png", alt: "Server 2 reads Client 1's output through the shared FIFO.",
-              cap: "<code>Server 2</code> opens the same FIFO and reads Client 1's output through it." }
+              cap: "<code>Server 2</code> reads Client 1’s output through that FIFO" }
           ];
 
           var root = document.getElementById("multiProcStoryboard");

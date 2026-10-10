@@ -126,7 +126,7 @@
               <ul class="feature-list">
                 <li><span class="fname">vmprint</span><span>Prints all three levels of an Sv39 page table. I used it for every later page-table bug.</span></li>
                 <li><span class="fname">usyscall</span><span>Maps a read-only page into each process so <code>ugetpid()</code> can return the pid without a system call.</span></li>
-                <li><span class="fname">superpage</span><span>Maps 2MB pages with level-1 leaf PTEs. <code>mappages()</code> got a page-size argument, and allocating, unmapping and splitting a superpage back into 4KB pages each needed their own code (<code>uvmallocsuper()</code>, <code>uvmumsuper()</code>, <code>splitpage()</code>).</span></li>
+                <li><span class="fname">superpage</span><span>Maps 2MB pages with level-1 leaf PTEs. <code>mappages()</code> got a page-size flag, and allocating, unmapping and splitting a superpage back into 4KB pages each needed their own code (<code>uvmallocsuper()</code>, <code>uvmumsuper()</code>, <code>splitpage()</code>).</span></li>
                 <li><span class="fname">dirtypages</span><span>Walks the page table for <code>PTE_D</code> and copies a bitmap, one bit per page, to user space.</span></li>
               </ul>
             </div>
@@ -252,7 +252,7 @@
           <h4>Removing the <code>LAB_*</code> switches</h4>
           <p>
             Each lab wraps its code in <code>#ifdef LAB_PGTBL</code>-style guards, so one build
-            contains only one lab. I removed them all except <code>LAB_SYSCALL</code>. The
+            contains only one lab. I removed them all except <code>LAB_SYSCALL</code> and one <code>LAB_TRAPS</code> guard. The
             <code>attack</code> exercise only works if <code>kalloc()</code> and <code>kfree()</code>
             do not fill freed pages with junk, while the other labs expect the junk fill. The two
             requirements conflict, so I kept the switch instead of choosing one.
@@ -312,7 +312,7 @@
     <a class="nav-card" href="xv6-debugging.html">
       <span class="kind">Debugging &rarr;</span>
       <span class="what">Debugging the merged kernel</span>
-      <span class="why">Two bugs outside the new allocator, and six bugs caused by the merge.</span>
+      <span class="why">Two bugs outside the new allocator, and fixed six bugs found after the merge.</span>
     </a>
     <a class="nav-card" href="https://github.com/z-jing-han/xv6-riscv" target="_blank" rel="noopener">
       <span class="kind">Source &rarr;</span>

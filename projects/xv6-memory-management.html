@@ -238,7 +238,7 @@ void ksplit(void *pa);</code></pre></div>
       <p>
         On the user side, <code>sbrk()</code> now takes two flag bits: <code>SBRK_LAZY</code>
         (allocate on page fault instead of immediately) and <code>SBRK_SUPER</code> (use 2MB pages).
-        They can be combined freely.
+        <code>SBRK_SUPER</code> only applies to eager allocation; lazily faulted pages are always 4KB.
       </p>
     </section>
 
